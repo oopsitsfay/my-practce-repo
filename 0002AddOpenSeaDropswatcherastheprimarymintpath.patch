@@ -1,0 +1,2593 @@
+From f1f372793ed6b3ee097e80521b9d44d78f3f637f Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 29 Jul 2026 22:21:06 +0000
+Subject: [PATCH 2/2] Add OpenSea Drops watcher as the primary mint path
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Adds the SeaDrop/Drops integration alongside the existing on-chain
+detector, so mints go through OpenSea's own transaction builder rather
+than a probed function signature.
+
+- opensea/client.ts: v2 REST client with X-API-KEY, per-request timeout,
+  and 429/5xx retry that honours Retry-After
+- opensea/drops.ts: getDrops / getDrop / buildDropMintTransaction, with
+  tolerant normalisation of prices (wei strings, decimal ETH, nested
+  {wei}/{value}), timestamps (seconds, millis, ISO), and snake vs camel
+  case field names. Endpoint paths are isolated in DROP_ENDPOINTS
+- drops/parser.ts: stage selection — Ethereum only, Public stages only,
+  price ceiling, supply check, maxPerWallet clamp, watch vs mint vs skip
+- watcher.ts: two-tier poller, 60s catalog refresh maintaining a
+  persistent watchlist plus 2.5s polling only inside a stage's go-live
+  window
+- dropMinter.ts: re-validates the API-built transaction before signing,
+  refusing any non-zero value, and applies a total gas-price ceiling
+  that skips retryably rather than terminally
+- store: watchlist, minted-by-slug dedupe, and one-attempt-per-stage
+  tracking so a reverting drop cannot be retried in a tight loop
+
+An unparseable price is treated as not-free rather than free, so a
+payload the normaliser does not understand can never mint by accident.
+
+The run loop now ticks at the fast cadence when the watcher is active,
+with each subsystem deciding internally whether it is due, so the
+on-chain log sweep stays on its own slower interval.
+
+Tests go from 55 to 96, adding a mock api.opensea.io alongside the
+existing mock JSON-RPC node to cover the catalog to mint flow, rate-limit
+backoff, dedupe, quantity clamping, the gas cap, and the kill switch.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01No5KQTBaYBpcKaRixYrbjz
+---
+ README.md                         | 170 +++++++++++++---
+ automint.config.json              |  36 ++--
+ src/cli.ts                        |  53 ++++-
+ src/config.ts                     |  24 +++
+ src/dropMinter.ts                 | 149 ++++++++++++++
+ src/drops/parser.ts               | 128 ++++++++++++
+ src/opensea/client.ts             | 113 +++++++++++
+ src/opensea/drops.ts              | 270 +++++++++++++++++++++++++
+ src/run.ts                        |  88 ++++++++-
+ src/state/store.ts                |  86 +++++++-
+ src/watcher.ts                    | 224 +++++++++++++++++++++
+ tests/dropParser.test.ts          | 243 +++++++++++++++++++++++
+ tests/filter.test.ts              |  25 +--
+ tests/helpers/config.ts           |  54 +++++
+ tests/helpers/mockOpensea.ts      | 109 ++++++++++
+ tests/run.integration.test.ts     |  35 +---
+ tests/screen.integration.test.ts  |  37 +---
+ tests/watcher.integration.test.ts | 318 ++++++++++++++++++++++++++++++
+ 18 files changed, 2021 insertions(+), 141 deletions(-)
+ create mode 100644 src/dropMinter.ts
+ create mode 100644 src/drops/parser.ts
+ create mode 100644 src/opensea/client.ts
+ create mode 100644 src/opensea/drops.ts
+ create mode 100644 src/watcher.ts
+ create mode 100644 tests/dropParser.test.ts
+ create mode 100644 tests/helpers/config.ts
+ create mode 100644 tests/helpers/mockOpensea.ts
+ create mode 100644 tests/watcher.integration.test.ts
+
+diff --git a/README.md b/README.md
+index 8c930d2..321edbc 100644
+--- a/README.md
++++ b/README.md
+@@ -1,15 +1,76 @@
+ # automint
+ 
+-Watches for NFT collections that have *just* gone live and mints the genuinely
+-free public ones to a wallet you control.
++Watches for free public NFT mints going live and mints them to a wallet you
++control, one per collection.
+ 
+ The design constraint that drives everything else: **every transaction this bot
+ sends has `value: 0`.** It never pays for a mint, never signs an approval, and
+-never signs calldata it didn't build itself. A route that turns out to cost
+-money fails simulation and gets discarded automatically, so "is this free?" is
+-answered by the chain rather than by a marketplace API.
++never signs calldata it didn't build itself. Anything that turns out to cost
++money is refused — including a transaction OpenSea's own API builds for us with
++a non-zero value.
+ 
+-## How it works
++There are **two independent detectors**. The Drops watcher is the primary path;
++the on-chain detector is a superset that catches what OpenSea doesn't index.
++
++## Detector 1: OpenSea Drops watcher (primary)
++
++`src/watcher.ts`, `src/opensea/`, `src/drops/parser.ts`
++
++Uses the official [Drops API](https://docs.opensea.io/docs/mint-from-a-drop) —
++`getDrops` → `getDrop(slug)` → `buildDropMintTransaction` — so mints go through
++OpenSea's own transaction builder rather than a guessed function signature.
++
++Two-tier polling, deliberately not aggressive:
++
++1. **Catalog refresh** every 60s over `upcoming` + `featured`, maintaining a
++   persistent watchlist.
++2. **Active window** only: drops whose public stage opens within ±120s get
++   polled every 2.5s, giving up 10 minutes past the start.
++
++No Flashbots, no mempool watching, no multi-wallet racing. For a large-supply
++free mint, reacting a couple of seconds after go-live is fine.
++
++Selection rules (`src/drops/parser.ts`, all unit-tested) — every one of these is
++a reason *not* to mint, and anything ambiguous resolves to skip:
++
++| Rule | Behaviour |
++| --- | --- |
++| Chain | Must match `drops.chain` (default `ethereum`). |
++| Stage | Must be a **Public** stage. An active Allowlist/VIP/presale stage is ignored. |
++| Price | Must be `<= drops.maxMintPriceWei` (default `0`). |
++| Unparseable price | Treated as **not free**, never as free. |
++| Supply | Skipped when `totalSupply >= maxSupply`. |
++| Wallet limit | Quantity clamped to `maxPerWallet`; a limit of 0 skips. |
++| Timing | Future stage → watch. Ended stage → skip. |
++| Dedupe | One mint per collection slug, ever. |
++| Retry | One attempt per stage window, so a reverting drop can't loop-spam. |
++
++**Scope boundary:** "live on OpenSea" for *minting* means drops in OpenSea's
++Drops/SeaDrop program — not every ERC-721 with a collection page or secondary
++listings. That's what detector 2 is for.
++
++> **Verify the endpoints before relying on this.** The request paths and payload
++> field names live in one place (`DROP_ENDPOINTS` and the normalisers in
++> `src/opensea/drops.ts`). I could not reach `api.opensea.io` from the machine
++> this was written on, so those paths are written to the documented shape but
++> unverified against a live key. Parsing is deliberately tolerant — it accepts
++> both `snake_case` and `camelCase`, wei strings, decimal-ETH strings, nested
++> `{ wei }` / `{ value }` prices, and unix-seconds / unix-millis / ISO
++> timestamps. Run `automint drops` with your key as the first thing you do; if
++> it prints nothing, fix the paths in that one file.
++
++```bash
++npx tsx src/cli.ts drops
++```
++
++```
++upcoming (3)
++  WATCH free-mint-thing              public stage opens in 842s
++  skip  priced-thing                 public stage costs 5000000000000000 wei, over the 0 wei ceiling
++  skip  allowlist-thing              no public stage
++```
++
++## Detector 2: on-chain sweep
+ 
+ ```
+ discover  ──▶  filter  ──▶  screen  ──▶  execute
+@@ -17,21 +78,21 @@ discover  ──▶  filter  ──▶  screen  ──▶  execute
+  minted?)       new?)        affordable?)  record)
+ ```
+ 
+-**1. Discovery** (`src/discovery/`) — two independent adapters:
++Off by default (`discovery.onchain.enabled`). Turn it on to catch free mints
++that never appear in the Drops API.
+ 
+-- `onchain` (default): sweeps recent blocks for `Transfer` / `TransferSingle`
+-  events with `from == address(0)` — i.e. actual mints happening right now.
+-  This finds collections before any indexer has them, which matters because
+-  free mints are usually gone by the time OpenSea lists them.
+-- `opensea`: newest collections from the OpenSea API v2, ordered by creation
+-  date. Needs `OPENSEA_API_KEY`. It only supplies *candidates* — OpenSea's
+-  public API doesn't expose mint stages for arbitrary contracts, so free-ness is
+-  still decided on-chain.
++**1. Discovery** (`src/discovery/`) — two adapters:
++
++- `onchain`: sweeps recent blocks for `Transfer` / `TransferSingle` events with
++  `from == address(0)` — i.e. actual mints happening right now. Finds
++  collections before any indexer has them.
++- `opensea`: newest collections from the `/collections` endpoint. Supplies
++  *candidates* only; free-ness is still decided on-chain.
+ 
+ **2. Filtering** (`src/discovery/index.ts`) — drops anything denylisted, stale
+ (`mint.maxAgeSeconds`), or already handled.
+ 
+-**3. Screening** (`src/screening/`) — the interesting part, cheapest check first:
++**3. Screening** (`src/screening/`) — cheapest check first:
+ 
+ - Confirm there's bytecode and it looks like an ERC-721/1155 (ERC-165, with a
+   `balanceOf` fallback for contracts with a broken `supportsInterface`).
+@@ -61,11 +122,14 @@ cp .env.example .env      # then edit it
+ ```
+ 
+ Put a **dedicated burner** private key in `.env` with just enough native token
+-for gas. Then:
++for gas, plus an [OpenSea API key](https://docs.opensea.io/reference/api-keys)
++(free tier is instant; it expires after 30 days, so rotate it). You'll also want
++a real RPC URL in `automint.config.json` — the public default is rate-limited.
+ 
+ ```bash
+ npm run wallet            # confirm address + balances
+-npm run once              # one discovery pass, dry run
++npx tsx src/cli.ts drops  # verify the Drops API works with your key
++npm run once              # one pass, dry run
+ npm start                 # watch continuously
+ ```
+ 
+@@ -109,7 +173,16 @@ fallback to dry run.
+ | Key | What it does |
+ | --- | --- |
+ | `dryRun` | Simulate everything, send nothing. Overridden by `AUTOMINT_DRY_RUN`. |
+-| `pollIntervalMs` | Gap between passes. |
++| `pollIntervalMs` | Gap between on-chain detector passes. |
++| `drops.enabled` | The OpenSea Drops watcher. Needs `OPENSEA_API_KEY`. |
++| `drops.chain` / `drops.chainId` | Chain slug in the payload, and the matching `chains[]` entry. |
++| `drops.listTypes` | Catalog lists to poll (`upcoming`, `featured`, `active`). |
++| `drops.catalogPollMs` | Slow tier, default 60s. |
++| `drops.activePollMs` | Fast tier inside a go-live window, default 2.5s. |
++| `drops.windowLeadSeconds` / `windowTrailSeconds` | Fast-poll window around the stage start. |
++| `drops.maxMintPriceWei` | Price ceiling. `0` means free-only. |
++| `drops.maxGasPriceGwei` | Total gas-price ceiling; skips (retryably) above it. |
++| `drops.quantity` | Requested quantity, clamped to `maxPerWallet`. |
+ | `chains[]` | `id`, `name`, `rpcUrl`, `enabled`, `openseaChain`, and the two gas ceilings. Adding a chain is a config edit, not a code change. |
+ | `chains[].maxGasCostWei` | Hard ceiling on a single mint's worst-case gas cost. |
+ | `chains[].dailyGasBudgetWei` | Per-UTC-day, per-chain spend cap. Charged on any inclusion, including reverts. |
+@@ -135,21 +208,35 @@ route.
+ ## State
+ 
+ `.automint/state.json` (gitignored), written atomically via temp-file + rename.
+-Tracks what was attempted, gas spent per day per chain, and the discovery
+-cursor per chain. `minted`, `dry-run` and `rejected` are terminal; `failed` is
+-retried on a later pass. `npm run state` summarises it.
++Tracks minted collection slugs, the drop watchlist, per-stage attempts,
++per-contract attempts, gas spent per day per chain, and the discovery cursor.
++`minted`, `dry-run` and `rejected` are terminal; `failed` is retried on a later
++pass. `npm run state` summarises it.
++
++Deleting the file makes the bot re-evaluate everything — including collections
++it already minted, so prefer not to.
+ 
+-Deleting the file makes the bot re-evaluate everything — including contracts it
+-already minted, so prefer not to.
++This is a JSON file rather than the SQLite the plan called for. It satisfies the
++same requirements — persistent dedupe by slug, watchlist lifecycle, atomic
++writes — without a native build step, and at one-drop-at-a-time volume there's
++nothing SQLite would buy. `src/state/store.ts` is the only file that touches
++persistence, so swapping it is self-contained if you want indexed queries later.
+ 
+ ## What this protects you from, and what it doesn't
+ 
+ Covered:
+ 
+-- **Paying by accident.** `value` is pinned to `0n` in the type system and at
+-  the send site. A paid mint reverts in simulation and is rejected.
+-- **Blind signing.** Calldata is always constructed locally from a known
+-  signature list. Nothing from an API or a contract is ever signed as-is.
++- **Paying by accident.** On the on-chain path `value` is pinned to `0n` in the
++  type system, and a paid mint reverts in simulation. On the Drops path the
++  built transaction is re-validated against `drops.maxMintPriceWei` before
++  signing, so a priced stage is refused even if the API returns one.
++- **Gas-price spikes.** `drops.maxGasPriceGwei` is a ceiling on the *total* gas
++  price, not just the tip, so a base-fee spike can't quietly make a free mint
++  expensive. Hitting it skips retryably rather than terminally.
++- **Blind signing.** On-chain calldata is built locally from a known signature
++  list. API-built calldata is checked for a usable `to`/`data`, forced through
++  the price ceiling, and gas-estimated before it is ever signed.
++- **Allowlist stages.** Only stages that classify as *public* are ever acted on.
+ - **Approval drains.** The bot has no code path that calls `approve` or
+   `setApprovalForAll`. This is the actual mechanism behind most "free mint"
+   wallet drains, and it needs a signature this bot never produces.
+@@ -159,6 +246,11 @@ Covered:
+ 
+ Not covered — know these going in:
+ 
++- **Unverified API paths.** See the warning above. `automint drops` is the check.
++- **Coverage.** The Drops watcher only sees what OpenSea lists as a drop;
++  obscure mints are missed unless you enable detector 2.
++- **OpenSea's developer terms.** Automated API use has to comply with them.
++  Polling is modest and backs off on 429, but that's your call to make.
+ - **Gas on junk.** Screening proves a mint *works*, not that it's *worth*
+   anything. Most of what this finds will be worthless. Gas on a failed or
+   pointless mint is spent either way; that's what the budgets are for.
+@@ -181,7 +273,21 @@ npm run typecheck
+ npm test
+ ```
+ 
+-55 tests, no network access required. `tests/helpers/mockNode.ts` is a small
+-JSON-RPC server, so the integration tests exercise the real viem client path —
+-`eth_getCode`, `eth_call`, `eth_estimateGas`, `eth_simulateV1`, `eth_getLogs` —
+-end to end against `src/`, including the full discover → screen → mint loop.
++96 tests, no network access required. Two mock servers make the integration
++tests real rather than stubbed:
++
++- `tests/helpers/mockNode.ts` — a JSON-RPC node, so the viem client path
++  (`eth_getCode`, `eth_call`, `eth_estimateGas`, `eth_simulateV1`,
++  `eth_getLogs`) runs end to end against `src/`.
++- `tests/helpers/mockOpensea.ts` — stands in for `api.opensea.io/api/v2`,
++  covering the catalog → watchlist → fast-poll → build → mint flow, 429 backoff
++  with `Retry-After`, slug dedupe, quantity clamping, the gas-price cap, the
++  kill switch, and the refusal of a priced built transaction.
++
++### Verifying against a real drop
++
++1. Leave `dryRun` on and run `npm start`. Confirm `automint drops` lists real
++   drops and that a known free mint shows `WATCH` then `MINT`.
++2. Go live with `AUTOMINT_DRY_RUN=false` on one free public drop and confirm one
++   NFT arrives and one slug is recorded in `npm run state`.
++3. Restart the process. The same slug must not mint again.
+diff --git a/automint.config.json b/automint.config.json
+index 996c64a..6abe5b6 100644
+--- a/automint.config.json
++++ b/automint.config.json
+@@ -4,24 +4,38 @@
+   "statePath": ".automint/state.json",
+   "killSwitchPath": ".automint/STOP",
+ 
++  "drops": {
++    "enabled": true,
++    "chain": "ethereum",
++    "chainId": 1,
++    "listTypes": ["upcoming", "featured"],
++    "catalogPollMs": 60000,
++    "activePollMs": 2500,
++    "windowLeadSeconds": 120,
++    "windowTrailSeconds": 600,
++    "maxMintPriceWei": "0",
++    "maxGasPriceGwei": 30,
++    "quantity": 1
++  },
++
+   "chains": [
+-    {
+-      "id": 8453,
+-      "name": "base",
+-      "rpcUrl": "https://mainnet.base.org",
+-      "enabled": true,
+-      "openseaChain": "base",
+-      "maxGasCostWei": "200000000000000",
+-      "dailyGasBudgetWei": "2000000000000000"
+-    },
+     {
+       "id": 1,
+       "name": "ethereum",
+       "rpcUrl": "https://eth.llamarpc.com",
+-      "enabled": false,
++      "enabled": true,
+       "openseaChain": "ethereum",
+       "maxGasCostWei": "3000000000000000",
+       "dailyGasBudgetWei": "20000000000000000"
++    },
++    {
++      "id": 8453,
++      "name": "base",
++      "rpcUrl": "https://mainnet.base.org",
++      "enabled": false,
++      "openseaChain": "base",
++      "maxGasCostWei": "200000000000000",
++      "dailyGasBudgetWei": "2000000000000000"
+     }
+   ],
+ 
+@@ -36,7 +50,7 @@
+ 
+   "discovery": {
+     "opensea": { "enabled": false, "limit": 50 },
+-    "onchain": { "enabled": true, "blockLookback": 60, "maxCandidatesPerScan": 40 }
++    "onchain": { "enabled": false, "blockLookback": 60, "maxCandidatesPerScan": 40 }
+   },
+ 
+   "denylist": [],
+diff --git a/src/cli.ts b/src/cli.ts
+index 261281b..a5d301d 100644
+--- a/src/cli.ts
++++ b/src/cli.ts
+@@ -2,7 +2,10 @@
+ import { formatEther, getAddress, isAddress } from 'viem';
+ import { makeChainContext } from './chains';
+ import { enabledChains, loadConfig } from './config';
++import { evaluateDrop } from './drops/parser';
+ import { log, shortError } from './logger';
++import { OpenseaClient } from './opensea/client';
++import { getDrops } from './opensea/drops';
+ import { createRunner } from './run';
+ import { screenOne } from './screening/index';
+ import { Store } from './state/store';
+@@ -12,7 +15,8 @@ const USAGE = `automint — mints free public NFT drops from a burner wallet
+ 
+ Usage:
+   automint run                       watch continuously
+-  automint once                      run a single discovery pass and exit
++  automint once                      run a single pass and exit
++  automint drops                     list OpenSea drops and how each was judged
+   automint check <chainId> <address> screen one contract and print the mint plan
+   automint wallet                    show the configured wallet and balances
+   automint state                     summarise what has been attempted so far
+@@ -50,6 +54,53 @@ async function main(argv: string[]): Promise<number> {
+       return 0;
+     }
+ 
++    case 'drops': {
++      const { config, secrets } = loaded;
++      if (!secrets.openseaApiKey) {
++        process.stderr.write('OPENSEA_API_KEY is not set — see .env.example\n');
++        return 2;
++      }
++
++      const client = new OpenseaClient({ apiKey: secrets.openseaApiKey });
++      const nowSeconds = Math.floor(Date.now() / 1000);
++      let total = 0;
++
++      for (const type of config.drops.listTypes) {
++        let drops;
++        try {
++          drops = await getDrops(client, type, config.discovery.opensea.limit);
++        } catch (err) {
++          process.stdout.write(`${type}: fetch failed — ${shortError(err)}\n`);
++          continue;
++        }
++
++        process.stdout.write(`\n${type} (${drops.length})\n`);
++        for (const drop of drops) {
++          total += 1;
++          const verdict = evaluateDrop(drop, {
++            chain: config.drops.chain,
++            maxMintPriceWei: config.drops.maxMintPriceWei,
++            quantity: config.drops.quantity,
++            nowSeconds,
++            windowLeadSeconds: config.drops.windowLeadSeconds,
++          });
++          const marker =
++            verdict.action === 'mint' ? 'MINT ' : verdict.action === 'watch' ? 'WATCH' : 'skip ';
++          process.stdout.write(
++            `  ${marker} ${drop.slug.padEnd(34)} ${verdict.reasons.join('; ')}\n`,
++          );
++        }
++      }
++
++      if (total === 0) {
++        process.stdout.write(
++          '\nNo drops returned. Verify the endpoint paths in src/opensea/drops.ts against your key.\n',
++        );
++        return 1;
++      }
++      return 0;
++    }
++
+     case 'check': {
+       const chainIdRaw = argv[1];
+       const addressRaw = argv[2];
+diff --git a/src/config.ts b/src/config.ts
+index f01ea6b..d3cd5c9 100644
+--- a/src/config.ts
++++ b/src/config.ts
+@@ -53,6 +53,30 @@ const configSchema = z.object({
+       requireTransferToSelf: z.boolean().default(true),
+     })
+     .default({}),
++  /** OpenSea Drops (SeaDrop) watcher — the primary path. */
++  drops: z
++    .object({
++      enabled: z.boolean().default(true),
++      /** Chain slug in the drop payload, and the chain we mint on. */
++      chain: z.string().default('ethereum'),
++      /** Chain id in `chains[]` that `chain` corresponds to. */
++      chainId: z.number().int().positive().default(1),
++      listTypes: z.array(z.enum(['upcoming', 'featured', 'active'])).default(['upcoming', 'featured']),
++      /** Slow loop: refresh the catalog. */
++      catalogPollMs: z.number().int().min(5_000).default(60_000),
++      /** Fast loop: poll a drop whose public stage is about to open. */
++      activePollMs: z.number().int().min(500).default(2_500),
++      /** Start fast-polling this long before the stage opens. */
++      windowLeadSeconds: z.number().int().min(0).default(120),
++      /** Give up this long after the stage opened. */
++      windowTrailSeconds: z.number().int().min(0).default(600),
++      /** Hard price ceiling. 0 means free mints only. */
++      maxMintPriceWei: weiString.default('0'),
++      /** Skip sending if network gas price exceeds this. */
++      maxGasPriceGwei: z.number().positive().default(30),
++      quantity: z.number().int().min(1).max(20).default(1),
++    })
++    .default({}),
+   discovery: z
+     .object({
+       opensea: z
+diff --git a/src/dropMinter.ts b/src/dropMinter.ts
+new file mode 100644
+index 0000000..3a82cec
+--- /dev/null
++++ b/src/dropMinter.ts
+@@ -0,0 +1,149 @@
++import { formatGwei, parseGwei } from 'viem';
++import { checkGasBudget } from './budget';
++import type { ChainContext } from './chains';
++import type { Config } from './config';
++import { resolveFees, worstCaseGasCost } from './execute/fees';
++import { log, shortError } from './logger';
++import type { BuiltMintTransaction } from './opensea/drops';
++import type { Store } from './state/store';
++import type { AttemptRecord } from './types';
++
++export interface DropMintDeps {
++  ctx: ChainContext;
++  config: Config;
++  store: Store;
++}
++
++/**
++ * Sends a mint transaction that OpenSea built for us.
++ *
++ * The built transaction is remote input, so it is validated before signing:
++ * a non-zero `value` is refused outright. That keeps the "never pay for a mint"
++ * guarantee even if the API returns a priced stage.
++ */
++export async function executeDropMint(
++  slug: string,
++  tx: BuiltMintTransaction,
++  deps: DropMintDeps,
++): Promise<AttemptRecord> {
++  const { ctx, config, store } = deps;
++  const now = Date.now();
++
++  if (tx.value > config.drops.maxMintPriceWei) {
++    const reason = `built transaction wants ${tx.value} wei, over the ${config.drops.maxMintPriceWei} wei ceiling`;
++    log.warn('refusing drop mint', { slug, reason });
++    return { status: 'rejected', at: now, reason };
++  }
++
++  const fees = await resolveFees(ctx.public, config.mint.maxPriorityFeeGwei);
++
++  // Independent of the priority-fee cap: this is a total gas price ceiling, so
++  // a base-fee spike cannot quietly turn a "free" mint into an expensive one.
++  const gasPriceCap = parseGwei(String(config.drops.maxGasPriceGwei));
++  if (fees.maxFeePerGas > gasPriceCap) {
++    const reason = `gas price ${formatGwei(fees.maxFeePerGas)} gwei exceeds cap ${config.drops.maxGasPriceGwei} gwei`;
++    log.info('skipping drop mint for now', { slug, reason });
++    // Not terminal: the window may still be open when gas settles.
++    return { status: 'skipped', at: now, reason };
++  }
++
++  let gasEstimate: bigint;
++  try {
++    gasEstimate = await ctx.public.estimateGas({
++      account: ctx.account,
++      to: tx.to,
++      data: tx.data,
++      value: tx.value,
++    });
++  } catch (err) {
++    // Sold out, not eligible, or stage closed between poll and send.
++    const reason = `gas estimation failed: ${shortError(err)}`;
++    log.info('drop mint not executable', { slug, reason });
++    return { status: 'rejected', at: now, reason };
++  }
++
++  if (gasEstimate > BigInt(config.mint.maxGasUnits)) {
++    const reason = `gas estimate ${gasEstimate} exceeds maxGasUnits ${config.mint.maxGasUnits}`;
++    return { status: 'rejected', at: now, reason };
++  }
++
++  const gasCost = worstCaseGasCost(gasEstimate, fees);
++  const budget = checkGasBudget(store, ctx.cfg, gasCost);
++  if (!budget.allowed) {
++    log.warn('drop mint over budget', { slug, reason: budget.reason });
++    return { status: 'skipped', at: now, reason: budget.reason };
++  }
++
++  if (config.dryRun || !ctx.wallet || !ctx.canSend) {
++    log.info('DRY RUN — would mint drop', {
++      slug,
++      to: tx.to,
++      value: tx.value,
++      gasEstimate,
++      maxFeePerGas: fees.maxFeePerGas,
++    });
++    return { status: 'dry-run', at: now, label: `drop:${slug}` };
++  }
++
++  const account = ctx.wallet.account;
++  if (!account) return { status: 'failed', at: now, reason: 'wallet has no account' };
++
++  let hash: `0x${string}`;
++  try {
++    hash = await ctx.wallet.sendTransaction({
++      account,
++      chain: ctx.chain,
++      to: tx.to,
++      data: tx.data,
++      value: tx.value,
++      gas: (gasEstimate * 125n) / 100n,
++      maxFeePerGas: fees.maxFeePerGas,
++      maxPriorityFeePerGas: fees.maxPriorityFeePerGas,
++    });
++  } catch (err) {
++    log.warn('drop mint rejected before broadcast', { slug, err: shortError(err) });
++    return { status: 'failed', at: now, label: `drop:${slug}`, reason: shortError(err) };
++  }
++
++  log.info('drop mint submitted', { slug, tx: hash });
++
++  try {
++    const receipt = await ctx.public.waitForTransactionReceipt({
++      hash,
++      confirmations: config.mint.confirmations,
++      timeout: 300_000,
++    });
++    const gasSpent = receipt.gasUsed * receipt.effectiveGasPrice;
++    store.addSpend(ctx.cfg.id, gasSpent);
++
++    if (receipt.status !== 'success') {
++      log.warn('drop mint reverted', { slug, tx: hash });
++      return {
++        status: 'failed',
++        at: Date.now(),
++        label: `drop:${slug}`,
++        txHash: hash,
++        gasCostWei: gasSpent.toString(),
++        reason: 'transaction reverted on chain',
++      };
++    }
++
++    log.info('drop minted', { slug, tx: hash, gasUsed: receipt.gasUsed });
++    return {
++      status: 'minted',
++      at: Date.now(),
++      label: `drop:${slug}`,
++      txHash: hash,
++      gasCostWei: gasSpent.toString(),
++    };
++  } catch (err) {
++    log.warn('could not confirm drop mint', { slug, tx: hash, err: shortError(err) });
++    return {
++      status: 'failed',
++      at: Date.now(),
++      label: `drop:${slug}`,
++      txHash: hash,
++      reason: `unconfirmed: ${shortError(err)}`,
++    };
++  }
++}
+diff --git a/src/drops/parser.ts b/src/drops/parser.ts
+new file mode 100644
+index 0000000..e55c0ae
+--- /dev/null
++++ b/src/drops/parser.ts
+@@ -0,0 +1,128 @@
++import type { NormalizedDrop, NormalizedStage } from '../opensea/drops';
++
++export type DropAction = 'mint' | 'watch' | 'skip';
++
++export interface DropVerdict {
++  slug: string;
++  action: DropAction;
++  /** The public stage we are acting on, when there is one. */
++  stage?: NormalizedStage;
++  /** Quantity to request, already clamped to the wallet limit. */
++  quantity?: number;
++  reasons: string[];
++}
++
++export interface EvaluateOptions {
++  /** Chain slug we mint on, e.g. "ethereum". */
++  chain: string;
++  /** Hard price ceiling. 0n means free-only. */
++  maxMintPriceWei: bigint;
++  /** Desired quantity, before the per-wallet clamp. */
++  quantity: number;
++  nowSeconds?: number;
++  /** How far ahead of the start time we begin watching. */
++  windowLeadSeconds?: number;
++}
++
++/** A stage identifier for dedupe, stable across polls of the same stage. */
++export function stageKey(slug: string, stage: NormalizedStage): string {
++  return `${slug}:${stage.label ?? stage.kind}:${stage.startTime ?? 0}`;
++}
++
++/**
++ * Decides whether a drop should be minted now, watched until its public stage
++ * opens, or dropped entirely.
++ *
++ * Conservative by construction: anything ambiguous resolves to `skip`. A drop
++ * with no parseable price, no public stage, or the wrong chain never mints.
++ */
++export function evaluateDrop(drop: NormalizedDrop, options: EvaluateOptions): DropVerdict {
++  const now = options.nowSeconds ?? Math.floor(Date.now() / 1000);
++  const lead = options.windowLeadSeconds ?? 120;
++  const reasons: string[] = [];
++  const skip = (reason: string): DropVerdict => ({ slug: drop.slug, action: 'skip', reasons: [reason] });
++
++  if (drop.chain !== undefined && drop.chain !== options.chain) {
++    return skip(`chain is ${drop.chain}, not ${options.chain}`);
++  }
++
++  if (drop.stages.length === 0) {
++    return skip('drop has no mint stages');
++  }
++
++  // Only ever act on a public stage; an active allowlist stage is not ours.
++  const publicStages = drop.stages.filter((s) => s.kind === 'public');
++  if (publicStages.length === 0) {
++    return skip('no public stage');
++  }
++
++  const affordable = publicStages.filter(
++    (s) => s.mintPriceWei >= 0n && s.mintPriceWei <= options.maxMintPriceWei,
++  );
++  if (affordable.length === 0) {
++    // A negative price means "unparseable", which is a different problem from
++    // "too expensive" and should be reported as such.
++    const known = publicStages.map((s) => s.mintPriceWei).filter((p) => p >= 0n);
++    const cheapest = known.length > 0 ? known.reduce((a, b) => (b < a ? b : a)) : undefined;
++    return skip(
++      cheapest === undefined
++        ? 'public stage price could not be parsed'
++        : `public stage costs ${cheapest} wei, over the ${options.maxMintPriceWei} wei ceiling`,
++    );
++  }
++
++  if (
++    drop.maxSupply !== undefined &&
++    drop.totalSupply !== undefined &&
++    drop.totalSupply >= drop.maxSupply
++  ) {
++    return skip(`sold out (${drop.totalSupply}/${drop.maxSupply})`);
++  }
++
++  // Prefer a stage that is open right now; otherwise the soonest one ahead.
++  const live = affordable.find(
++    (s) =>
++      (s.startTime === undefined || now >= s.startTime) &&
++      (s.endTime === undefined || now <= s.endTime),
++  );
++
++  if (live) {
++    if (live.maxPerWallet !== undefined && live.maxPerWallet <= 0) {
++      return skip('public stage allows 0 per wallet');
++    }
++    const quantity = Math.min(options.quantity, live.maxPerWallet ?? options.quantity);
++    if (quantity <= 0) return skip('computed quantity is 0');
++    if (live.startTime === undefined) {
++      reasons.push('stage has no start time; treating as open');
++    }
++    return { slug: drop.slug, action: 'mint', stage: live, quantity, reasons };
++  }
++
++  const upcoming = affordable
++    .filter((s) => s.startTime !== undefined && s.startTime > now)
++    .sort((a, b) => (a.startTime ?? 0) - (b.startTime ?? 0))[0];
++
++  if (upcoming) {
++    const secondsAway = (upcoming.startTime ?? 0) - now;
++    return {
++      slug: drop.slug,
++      action: 'watch',
++      stage: upcoming,
++      reasons: [`public stage opens in ${secondsAway}s`],
++    };
++  }
++
++  return skip('public stage has already ended');
++}
++
++/**
++ * True when a watched drop is close enough to its start time to warrant the
++ * fast poll. Everything else stays on the slow catalog refresh.
++ */
++export function isInActiveWindow(
++  startTimeSeconds: number,
++  options: { nowSeconds?: number; leadSeconds: number; trailSeconds: number },
++): boolean {
++  const now = options.nowSeconds ?? Math.floor(Date.now() / 1000);
++  return now >= startTimeSeconds - options.leadSeconds && now <= startTimeSeconds + options.trailSeconds;
++}
+diff --git a/src/opensea/client.ts b/src/opensea/client.ts
+new file mode 100644
+index 0000000..87b28bc
+--- /dev/null
++++ b/src/opensea/client.ts
+@@ -0,0 +1,113 @@
++import { log, shortError } from '../logger';
++
++export interface OpenseaClientOptions {
++  apiKey: string;
++  baseUrl?: string;
++  /** Per-request timeout. */
++  timeoutMs?: number;
++  /** Attempts for retryable failures (429 / 5xx / network). */
++  maxAttempts?: number;
++  /** Injectable for tests. */
++  sleep?: (ms: number) => Promise<void>;
++}
++
++export class OpenseaError extends Error {
++  constructor(
++    message: string,
++    readonly status?: number,
++    readonly retryable = false,
++  ) {
++    super(message);
++    this.name = 'OpenseaError';
++  }
++}
++
++const defaultSleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
++
++/**
++ * Thin typed wrapper over the OpenSea v2 REST API.
++ *
++ * Rate limiting is the main operational hazard here, so 429 is retried with
++ * exponential backoff and honours `Retry-After` when the server sends it. The
++ * polling loops above are deliberately modest for the same reason.
++ */
++export class OpenseaClient {
++  private readonly baseUrl: string;
++  private readonly timeoutMs: number;
++  private readonly maxAttempts: number;
++  private readonly sleep: (ms: number) => Promise<void>;
++
++  constructor(private readonly options: OpenseaClientOptions) {
++    this.baseUrl = (options.baseUrl ?? 'https://api.opensea.io/api/v2').replace(/\/$/, '');
++    this.timeoutMs = options.timeoutMs ?? 15_000;
++    this.maxAttempts = options.maxAttempts ?? 4;
++    this.sleep = options.sleep ?? defaultSleep;
++  }
++
++  async get<T>(path: string, query: Record<string, string | number | undefined> = {}): Promise<T> {
++    const url = new URL(`${this.baseUrl}${path}`);
++    for (const [key, value] of Object.entries(query)) {
++      if (value !== undefined) url.searchParams.set(key, String(value));
++    }
++    return this.request<T>(url, { method: 'GET' });
++  }
++
++  async post<T>(path: string, body: unknown): Promise<T> {
++    return this.request<T>(new URL(`${this.baseUrl}${path}`), {
++      method: 'POST',
++      body: JSON.stringify(body),
++      headers: { 'content-type': 'application/json' },
++    });
++  }
++
++  private async request<T>(url: URL, init: RequestInit): Promise<T> {
++    let lastError: OpenseaError | undefined;
++
++    for (let attempt = 1; attempt <= this.maxAttempts; attempt += 1) {
++      let res: Response;
++      try {
++        res = await fetch(url, {
++          ...init,
++          headers: {
++            accept: 'application/json',
++            'x-api-key': this.options.apiKey,
++            ...(init.headers ?? {}),
++          },
++          signal: AbortSignal.timeout(this.timeoutMs),
++        });
++      } catch (err) {
++        lastError = new OpenseaError(`network error: ${shortError(err)}`, undefined, true);
++        await this.backoff(attempt, lastError);
++        continue;
++      }
++
++      if (res.ok) {
++        return (await res.json()) as T;
++      }
++
++      const retryable = res.status === 429 || res.status >= 500;
++      const detail = await res.text().catch(() => '');
++      lastError = new OpenseaError(
++        `${res.status} ${res.statusText}${detail ? `: ${detail.slice(0, 200)}` : ''}`,
++        res.status,
++        retryable,
++      );
++
++      if (!retryable) throw lastError;
++
++      // Prefer the server's own pacing when it gives us one.
++      const retryAfter = Number(res.headers.get('retry-after'));
++      const waitMs = Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : undefined;
++      await this.backoff(attempt, lastError, waitMs);
++    }
++
++    throw lastError ?? new OpenseaError('request failed');
++  }
++
++  private async backoff(attempt: number, err: OpenseaError, overrideMs?: number): Promise<void> {
++    if (attempt >= this.maxAttempts) throw err;
++    const waitMs = overrideMs ?? 500 * 2 ** (attempt - 1);
++    log.debug('opensea retry', { attempt, waitMs, err: err.message });
++    await this.sleep(waitMs);
++  }
++}
+diff --git a/src/opensea/drops.ts b/src/opensea/drops.ts
+new file mode 100644
+index 0000000..42ccb79
+--- /dev/null
++++ b/src/opensea/drops.ts
+@@ -0,0 +1,270 @@
++import { getAddress, isAddress, parseEther, type Hex } from 'viem';
++import type { Address } from '../types';
++import type { OpenseaClient } from './client';
++
++/**
++ * OpenSea's Drops endpoints, in one place so a path change is a one-line edit.
++ *
++ * These follow the shapes documented under "Mint from a Drop". Verify them
++ * against your own API key before relying on the live path — see the README.
++ */
++export const DROP_ENDPOINTS = {
++  list: '/drops',
++  detail: (slug: string) => `/drops/${encodeURIComponent(slug)}`,
++  buildMint: (slug: string) => `/drops/${encodeURIComponent(slug)}/mint`,
++} as const;
++
++export type DropListType = 'upcoming' | 'featured' | 'active';
++
++export type StageKind = 'public' | 'allowlist' | 'unknown';
++
++export interface NormalizedStage {
++  kind: StageKind;
++  label?: string;
++  mintPriceWei: bigint;
++  /** Unix seconds. Undefined when the payload omits it. */
++  startTime?: number;
++  endTime?: number;
++  maxPerWallet?: number;
++}
++
++export interface NormalizedDrop {
++  slug: string;
++  name?: string;
++  chain?: string;
++  contract?: Address;
++  totalSupply?: number;
++  maxSupply?: number;
++  stages: NormalizedStage[];
++}
++
++export interface BuiltMintTransaction {
++  to: Address;
++  data: Hex;
++  value: bigint;
++}
++
++/** Reads the first present key. API responses vary between snake and camel case. */
++function pick(source: Record<string, unknown>, keys: string[]): unknown {
++  for (const key of keys) {
++    const value = source[key];
++    if (value !== undefined && value !== null) return value;
++  }
++  return undefined;
++}
++
++function asRecord(value: unknown): Record<string, unknown> | undefined {
++  return typeof value === 'object' && value !== null && !Array.isArray(value)
++    ? (value as Record<string, unknown>)
++    : undefined;
++}
++
++/**
++ * Prices show up as wei strings, decimal ETH strings, numbers, or nested
++ * `{ wei }` / `{ value }` objects depending on the endpoint. Normalise to wei.
++ */
++export function parsePriceToWei(raw: unknown): bigint | undefined {
++  if (raw === undefined || raw === null) return undefined;
++  if (typeof raw === 'bigint') return raw;
++
++  const nested = asRecord(raw);
++  if (nested) {
++    return parsePriceToWei(pick(nested, ['wei', 'value', 'amount', 'raw', 'currentPrice']));
++  }
++
++  if (typeof raw === 'number') {
++    if (!Number.isFinite(raw)) return undefined;
++    // A bare number small enough to be ETH is treated as ETH, else as wei.
++    return Number.isInteger(raw) && Math.abs(raw) > 1e6
++      ? BigInt(raw)
++      : parseEther(String(raw));
++  }
++
++  if (typeof raw === 'string') {
++    const trimmed = raw.trim();
++    if (trimmed === '') return undefined;
++    try {
++      // A decimal point means it is denominated in ETH, not wei.
++      return trimmed.includes('.') ? parseEther(trimmed) : BigInt(trimmed);
++    } catch {
++      return undefined;
++    }
++  }
++
++  return undefined;
++}
++
++/** Timestamps arrive as unix seconds, unix millis, or ISO strings. */
++export function parseTimeToSeconds(raw: unknown): number | undefined {
++  if (raw === undefined || raw === null) return undefined;
++
++  if (typeof raw === 'number' && Number.isFinite(raw)) {
++    // Anything past ~year 33658 in seconds is really milliseconds.
++    return raw > 1e12 ? Math.floor(raw / 1000) : Math.floor(raw);
++  }
++
++  if (typeof raw === 'string') {
++    const trimmed = raw.trim();
++    if (trimmed === '') return undefined;
++    if (/^\d+$/.test(trimmed)) return parseTimeToSeconds(Number(trimmed));
++    const parsed = Date.parse(trimmed);
++    return Number.isNaN(parsed) ? undefined : Math.floor(parsed / 1000);
++  }
++
++  return undefined;
++}
++
++export function classifyStage(label: unknown): StageKind {
++  if (typeof label !== 'string') return 'unknown';
++  const normalized = label.toLowerCase();
++  if (normalized.includes('public')) return 'public';
++  if (
++    normalized.includes('allow') ||
++    normalized.includes('presale') ||
++    normalized.includes('vip') ||
++    normalized.includes('private')
++  ) {
++    return 'allowlist';
++  }
++  return 'unknown';
++}
++
++function normalizeStage(raw: unknown): NormalizedStage | undefined {
++  const record = asRecord(raw);
++  if (!record) return undefined;
++
++  const label = pick(record, ['stage', 'stageType', 'stage_type', 'label', 'name', 'type']);
++  const price = parsePriceToWei(
++    pick(record, ['mintPrice', 'mint_price', 'price', 'pricePerToken', 'price_per_token']),
++  );
++
++  return {
++    kind: classifyStage(label),
++    label: typeof label === 'string' ? label : undefined,
++    // Missing price is treated as "not free" so it can never mint by accident.
++    mintPriceWei: price ?? -1n,
++    startTime: parseTimeToSeconds(pick(record, ['startTime', 'start_time', 'startAt', 'start_at'])),
++    endTime: parseTimeToSeconds(pick(record, ['endTime', 'end_time', 'endAt', 'end_at'])),
++    maxPerWallet: toOptionalNumber(
++      pick(record, [
++        'maxPerWallet',
++        'max_per_wallet',
++        'maxMintableByWallet',
++        'maxTotalMintableByWallet',
++        'max_total_mintable_by_wallet',
++        'limit',
++      ]),
++    ),
++  };
++}
++
++function toOptionalNumber(raw: unknown): number | undefined {
++  if (typeof raw === 'number' && Number.isFinite(raw)) return raw;
++  if (typeof raw === 'string' && /^\d+$/.test(raw.trim())) return Number(raw.trim());
++  return undefined;
++}
++
++function toOptionalAddress(raw: unknown): Address | undefined {
++  if (typeof raw === 'string' && isAddress(raw)) return getAddress(raw);
++  const record = asRecord(raw);
++  if (record) {
++    const nested = pick(record, ['address', 'contract', 'contractAddress']);
++    if (typeof nested === 'string' && isAddress(nested)) return getAddress(nested);
++  }
++  return undefined;
++}
++
++/** Tolerant translation of a raw drop payload into the shape we reason about. */
++export function normalizeDrop(raw: unknown): NormalizedDrop | undefined {
++  const record = asRecord(raw);
++  if (!record) return undefined;
++
++  const slugRaw = pick(record, ['collection', 'collectionSlug', 'collection_slug', 'slug']);
++  const slug =
++    typeof slugRaw === 'string'
++      ? slugRaw
++      : ((asRecord(slugRaw)?.slug ?? asRecord(slugRaw)?.collection) as string | undefined);
++  if (typeof slug !== 'string' || slug === '') return undefined;
++
++  const stagesRaw = pick(record, ['stages', 'mintStages', 'mint_stages', 'publicStages']);
++  const stages = Array.isArray(stagesRaw)
++    ? stagesRaw.map(normalizeStage).filter((s): s is NormalizedStage => !!s)
++    : [];
++
++  const contracts = pick(record, ['contracts']);
++  const contract =
++    toOptionalAddress(pick(record, ['contract', 'contractAddress', 'contract_address', 'address'])) ??
++    (Array.isArray(contracts) ? toOptionalAddress(contracts[0]) : undefined);
++
++  const chainRaw = pick(record, ['chain', 'chainIdentifier', 'chain_identifier', 'network']);
++
++  return {
++    slug,
++    name: typeof pick(record, ['name', 'title']) === 'string'
++      ? (pick(record, ['name', 'title']) as string)
++      : undefined,
++    chain: typeof chainRaw === 'string' ? chainRaw.toLowerCase() : undefined,
++    contract,
++    totalSupply: toOptionalNumber(pick(record, ['totalSupply', 'total_supply', 'minted'])),
++    maxSupply: toOptionalNumber(pick(record, ['maxSupply', 'max_supply', 'supply'])),
++    stages,
++  };
++}
++
++interface DropListResponse {
++  drops?: unknown[];
++  results?: unknown[];
++  next?: string;
++}
++
++export async function getDrops(
++  client: OpenseaClient,
++  type: DropListType,
++  limit = 50,
++): Promise<NormalizedDrop[]> {
++  const body = await client.get<DropListResponse>(DROP_ENDPOINTS.list, { type, limit });
++  const entries = body.drops ?? body.results ?? [];
++  return entries.map(normalizeDrop).filter((d): d is NormalizedDrop => !!d);
++}
++
++export async function getDrop(
++  client: OpenseaClient,
++  slug: string,
++): Promise<NormalizedDrop | undefined> {
++  const body = await client.get<Record<string, unknown>>(DROP_ENDPOINTS.detail(slug));
++  // Detail responses sometimes wrap the drop one level down.
++  return normalizeDrop(body.drop ?? body) ?? normalizeDrop(body);
++}
++
++/**
++ * Asks OpenSea to build the mint transaction, then re-validates what came back.
++ *
++ * The response is remote input, so it is never trusted blindly: the caller
++ * refuses anything with a non-zero `value`, which keeps the "never pay" rule
++ * intact even if the API says otherwise.
++ */
++export async function buildDropMintTransaction(
++  client: OpenseaClient,
++  slug: string,
++  minter: Address,
++  quantity: number,
++): Promise<BuiltMintTransaction> {
++  const body = await client.post<Record<string, unknown>>(DROP_ENDPOINTS.buildMint(slug), {
++    minter,
++    quantity,
++  });
++
++  const tx = asRecord(pick(body, ['transaction', 'tx'])) ?? body;
++
++  const to = toOptionalAddress(pick(tx, ['to', 'target', 'contract']));
++  if (!to) throw new Error(`drop ${slug}: mint transaction has no usable "to" address`);
++
++  const dataRaw = pick(tx, ['data', 'calldata', 'input']);
++  if (typeof dataRaw !== 'string' || !dataRaw.startsWith('0x')) {
++    throw new Error(`drop ${slug}: mint transaction has no usable calldata`);
++  }
++
++  const value = parsePriceToWei(pick(tx, ['value', 'wei', 'amount'])) ?? 0n;
++
++  return { to, data: dataRaw as Hex, value };
++}
+diff --git a/src/run.ts b/src/run.ts
+index 2b741c4..d33dc9a 100644
+--- a/src/run.ts
++++ b/src/run.ts
+@@ -5,8 +5,10 @@ import { resolveFees } from './execute/fees';
+ import { executeMint } from './execute/mint';
+ import { discover, filterCandidates } from './discovery/index';
+ import { log, shortError } from './logger';
++import { OpenseaClient } from './opensea/client';
+ import { screen } from './screening/index';
+ import { Store } from './state/store';
++import { DropWatcher } from './watcher';
+ 
+ export interface Runner {
+   runOnce(): Promise<PassSummary>;
+@@ -23,6 +25,10 @@ export interface PassSummary {
+   dryRun: number;
+   rejected: number;
+   failed: number;
++  /** Drops currently on the watchlist awaiting their public stage. */
++  watching: number;
++  /** Drop detail polls made inside an active go-live window. */
++  dropPolls: number;
+ }
+ 
+ const EMPTY_SUMMARY: PassSummary = {
+@@ -32,6 +38,8 @@ const EMPTY_SUMMARY: PassSummary = {
+   dryRun: 0,
+   rejected: 0,
+   failed: 0,
++  watching: 0,
++  dropPolls: 0,
+ };
+ 
+ export function createRunner(loaded: LoadedConfig): Runner {
+@@ -42,6 +50,28 @@ export function createRunner(loaded: LoadedConfig): Runner {
+ 
+   let stopped = false;
+ 
++  // The Drops watcher is the primary path, but it needs an API key and a chain
++  // context matching config.drops.chainId to be usable.
++  const dropsCtx = contexts.find((c) => c.cfg.id === config.drops.chainId);
++  let watcher: DropWatcher | undefined;
++
++  if (config.drops.enabled) {
++    if (!secrets.openseaApiKey) {
++      log.warn('drops watcher disabled: OPENSEA_API_KEY is not set');
++    } else if (!dropsCtx) {
++      log.warn('drops watcher disabled: no enabled chain matches drops.chainId', {
++        chainId: config.drops.chainId,
++      });
++    } else {
++      watcher = new DropWatcher({
++        ctx: dropsCtx,
++        config,
++        store,
++        client: new OpenseaClient({ apiKey: secrets.openseaApiKey }),
++      });
++    }
++  }
++
+   async function passForChain(ctx: ChainContext, summary: PassSummary): Promise<void> {
+     const candidates = await discover({
+       ctx,
+@@ -117,15 +147,40 @@ export function createRunner(loaded: LoadedConfig): Runner {
+     }
+   }
+ 
+-  async function runOnce(): Promise<PassSummary> {
++  let lastChainPassAt = 0;
++
++  /**
++   * `onlyDue` lets the fast drop tier tick every few seconds without dragging
++   * the much heavier on-chain log sweep along with it.
++   */
++  async function runOnce(opts: { onlyDue?: boolean } = {}): Promise<PassSummary> {
+     const summary = { ...EMPTY_SUMMARY };
++    const now = Date.now();
+ 
+-    for (const ctx of contexts) {
+-      if (stopped) break;
++    if (watcher) {
+       try {
+-        await passForChain(ctx, summary);
++        const stats = await watcher.tick();
++        summary.minted += stats.minted;
++        summary.dryRun += stats.dryRun;
++        summary.rejected += stats.rejected;
++        summary.discovered += stats.cataloged;
++        summary.watching = stats.watching;
++        summary.dropPolls = stats.polled;
+       } catch (err) {
+-        log.warn('pass failed for chain', { chain: ctx.cfg.name, err: shortError(err) });
++        log.warn('drops watcher tick failed', { err: shortError(err) });
++      }
++    }
++
++    const chainPassDue = !opts.onlyDue || now - lastChainPassAt >= config.pollIntervalMs;
++    if (chainPassDue) {
++      lastChainPassAt = now;
++      for (const ctx of contexts) {
++        if (stopped) break;
++        try {
++          await passForChain(ctx, summary);
++        } catch (err) {
++          log.warn('pass failed for chain', { chain: ctx.cfg.name, err: shortError(err) });
++        }
+       }
+     }
+ 
+@@ -134,11 +189,19 @@ export function createRunner(loaded: LoadedConfig): Runner {
+   }
+ 
+   async function runForever(): Promise<void> {
++    // Tick at the fast cadence when the drops watcher is live; each subsystem
++    // decides internally whether it is actually due.
++    const tickMs = watcher
++      ? Math.min(config.pollIntervalMs, config.drops.activePollMs)
++      : config.pollIntervalMs;
++
+     log.info('automint started', {
+       dryRun: config.dryRun,
+       canSend: contexts.some((c) => c.canSend),
+       wallet: contexts[0]?.account,
+       chains: contexts.map((c) => c.cfg.name).join(','),
++      dropsWatcher: !!watcher,
++      tickMs,
+       pollIntervalMs: config.pollIntervalMs,
+     });
+ 
+@@ -148,11 +211,18 @@ export function createRunner(loaded: LoadedConfig): Runner {
+ 
+     while (!stopped) {
+       const started = Date.now();
+-      const summary = await runOnce();
+-      log.info('pass complete', { ...summary, ms: Date.now() - started });
++      const summary = await runOnce({ onlyDue: true });
++
++      // Quiet ticks are the common case on the fast tier, so only log activity.
++      const noteworthy =
++        summary.screened > 0 ||
++        summary.minted > 0 ||
++        summary.dryRun > 0 ||
++        summary.dropPolls > 0 ||
++        summary.discovered > 0;
++      if (noteworthy) log.info('pass complete', { ...summary, ms: Date.now() - started });
+ 
+-      const elapsed = Date.now() - started;
+-      const wait = Math.max(0, config.pollIntervalMs - elapsed);
++      const wait = Math.max(0, tickMs - (Date.now() - started));
+       if (wait > 0) await sleep(wait, () => stopped);
+     }
+ 
+diff --git a/src/state/store.ts b/src/state/store.ts
+index ba996a2..c624f60 100644
+--- a/src/state/store.ts
++++ b/src/state/store.ts
+@@ -2,6 +2,17 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from '
+ import { dirname, resolve } from 'node:path';
+ import type { Address, AttemptRecord } from '../types';
+ 
++/** A drop we are waiting on, keyed by collection slug. */
++export interface WatchEntry {
++  slug: string;
++  name?: string;
++  /** Unix seconds the public stage opens. */
++  startTime: number;
++  contract?: Address;
++  /** ms epoch this entry was last refreshed from the catalog. */
++  updatedAt: number;
++}
++
+ interface StateFile {
+   version: 1;
+   /** "<chainId>:<lowercased address>" -> what happened. */
+@@ -10,9 +21,23 @@ interface StateFile {
+   spend: Record<string, string>;
+   /** chainId -> last block scanned by the on-chain discovery adapter. */
+   cursors: Record<string, string>;
++  /** Drops awaiting their public stage, by slug. */
++  watchlist: Record<string, WatchEntry>;
++  /** Collection slugs already minted, by slug. */
++  mintedSlugs: Record<string, AttemptRecord>;
++  /** Stage keys we already tried, so a revert does not loop-spam. */
++  stageAttempts: Record<string, number>;
+ }
+ 
+-const EMPTY: StateFile = { version: 1, attempts: {}, spend: {}, cursors: {} };
++const EMPTY: StateFile = {
++  version: 1,
++  attempts: {},
++  spend: {},
++  cursors: {},
++  watchlist: {},
++  mintedSlugs: {},
++  stageAttempts: {},
++};
+ 
+ export function attemptKey(chainId: number, contract: Address): string {
+   return `${chainId}:${contract.toLowerCase()}`;
+@@ -46,6 +71,9 @@ export class Store {
+         attempts: parsed.attempts ?? {},
+         spend: parsed.spend ?? {},
+         cursors: parsed.cursors ?? {},
++        watchlist: parsed.watchlist ?? {},
++        mintedSlugs: parsed.mintedSlugs ?? {},
++        stageAttempts: parsed.stageAttempts ?? {},
+       });
+     } catch {
+       // A corrupt state file should not stop the bot; worst case we re-scan.
+@@ -96,19 +124,75 @@ export class Store {
+     this.data.cursors[String(chainId)] = block.toString();
+   }
+ 
++  // --- OpenSea Drops watcher state ---
++
++  /** Dedupe by collection slug, so a drop is never minted twice. */
++  isSlugMinted(slug: string): boolean {
++    return this.data.mintedSlugs[slug] !== undefined;
++  }
++
++  recordSlugMint(slug: string, record: AttemptRecord): void {
++    this.data.mintedSlugs[slug] = record;
++  }
++
++  /** One attempt per stage window, unless the caller clears it. */
++  hasAttemptedStage(key: string): boolean {
++    return this.data.stageAttempts[key] !== undefined;
++  }
++
++  markStageAttempted(key: string, at = Date.now()): void {
++    this.data.stageAttempts[key] = at;
++  }
++
++  /** Reopens a stage for retry after a transient skip (gas cap, budget). */
++  clearStageAttempt(key: string): void {
++    delete this.data.stageAttempts[key];
++  }
++
++  upsertWatch(entry: WatchEntry): void {
++    this.data.watchlist[entry.slug] = entry;
++  }
++
++  removeWatch(slug: string): void {
++    delete this.data.watchlist[slug];
++  }
++
++  listWatch(): WatchEntry[] {
++    return Object.values(this.data.watchlist);
++  }
++
++  /** Forgets watch entries whose window closed long ago. */
++  pruneWatchlist(beforeSeconds: number): number {
++    let removed = 0;
++    for (const [slug, entry] of Object.entries(this.data.watchlist)) {
++      if (entry.startTime < beforeSeconds) {
++        delete this.data.watchlist[slug];
++        removed += 1;
++      }
++    }
++    return removed;
++  }
++
+   summary(): {
+     attempts: number;
+     byStatus: Record<string, number>;
+     spend: Record<string, string>;
++    watching: number;
++    mintedSlugs: string[];
+   } {
+     const byStatus: Record<string, number> = {};
+     for (const rec of Object.values(this.data.attempts)) {
+       byStatus[rec.status] = (byStatus[rec.status] ?? 0) + 1;
+     }
++    for (const rec of Object.values(this.data.mintedSlugs)) {
++      byStatus[rec.status] = (byStatus[rec.status] ?? 0) + 1;
++    }
+     return {
+       attempts: Object.keys(this.data.attempts).length,
+       byStatus,
+       spend: { ...this.data.spend },
++      watching: Object.keys(this.data.watchlist).length,
++      mintedSlugs: Object.keys(this.data.mintedSlugs),
+     };
+   }
+ }
+diff --git a/src/watcher.ts b/src/watcher.ts
+new file mode 100644
+index 0000000..25e80f9
+--- /dev/null
++++ b/src/watcher.ts
+@@ -0,0 +1,224 @@
++import { killSwitchEngaged } from './budget';
++import type { ChainContext } from './chains';
++import type { Config } from './config';
++import { evaluateDrop, isInActiveWindow, stageKey, type DropVerdict } from './drops/parser';
++import { executeDropMint } from './dropMinter';
++import { log, shortError } from './logger';
++import type { OpenseaClient } from './opensea/client';
++import { buildDropMintTransaction, getDrop, getDrops } from './opensea/drops';
++import type { Store } from './state/store';
++
++export interface WatcherDeps {
++  ctx: ChainContext;
++  config: Config;
++  store: Store;
++  client: OpenseaClient;
++}
++
++export interface WatcherStats {
++  cataloged: number;
++  watching: number;
++  polled: number;
++  minted: number;
++  dryRun: number;
++  skipped: number;
++  rejected: number;
++}
++
++const EMPTY_STATS: WatcherStats = {
++  cataloged: 0,
++  watching: 0,
++  polled: 0,
++  minted: 0,
++  dryRun: 0,
++  skipped: 0,
++  rejected: 0,
++};
++
++/**
++ * Two-tier poller for OpenSea Drops.
++ *
++ * The slow tier refreshes the catalog and maintains a watchlist; the fast tier
++ * only runs for drops whose public stage is about to open. That keeps request
++ * volume low enough to stay well inside the API's rate limits while still
++ * reacting within a few seconds of go-live.
++ */
++export class DropWatcher {
++  private lastCatalogAt = 0;
++
++  constructor(private readonly deps: WatcherDeps) {}
++
++  /** One tick. Safe to call as often as the caller likes; it self-paces. */
++  async tick(now = Date.now()): Promise<WatcherStats> {
++    const stats = { ...EMPTY_STATS };
++    const { config } = this.deps;
++
++    if (now - this.lastCatalogAt >= config.drops.catalogPollMs) {
++      this.lastCatalogAt = now;
++      await this.refreshCatalog(stats, now);
++    }
++
++    await this.pollActiveWindows(stats, now);
++
++    stats.watching = this.deps.store.listWatch().length;
++    return stats;
++  }
++
++  /** Slow tier: pull the catalog and decide what to watch or mint immediately. */
++  private async refreshCatalog(stats: WatcherStats, now: number): Promise<void> {
++    const { config, client, store } = this.deps;
++    const nowSeconds = Math.floor(now / 1000);
++
++    const seen = new Map<string, DropVerdict>();
++
++    for (const type of config.drops.listTypes) {
++      let drops;
++      try {
++        drops = await getDrops(client, type, config.discovery.opensea.limit);
++      } catch (err) {
++        log.warn('drop catalog fetch failed', { type, err: shortError(err) });
++        continue;
++      }
++
++      stats.cataloged += drops.length;
++
++      for (const drop of drops) {
++        if (seen.has(drop.slug)) continue;
++        if (store.isSlugMinted(drop.slug)) continue;
++
++        const verdict = evaluateDrop(drop, {
++          chain: config.drops.chain,
++          maxMintPriceWei: config.drops.maxMintPriceWei,
++          quantity: config.drops.quantity,
++          nowSeconds,
++          windowLeadSeconds: config.drops.windowLeadSeconds,
++        });
++        seen.set(drop.slug, verdict);
++
++        if (verdict.action === 'watch' && verdict.stage?.startTime !== undefined) {
++          store.upsertWatch({
++            slug: drop.slug,
++            name: drop.name,
++            startTime: verdict.stage.startTime,
++            contract: drop.contract,
++            updatedAt: now,
++          });
++          log.debug('watching drop', { slug: drop.slug, opensIn: verdict.stage.startTime - nowSeconds });
++        } else if (verdict.action === 'mint') {
++          // Already open when we found it — go straight to the mint path.
++          await this.attemptMint(drop.slug, verdict, stats, now);
++        } else {
++          store.removeWatch(drop.slug);
++          log.debug('drop skipped', { slug: drop.slug, reasons: verdict.reasons });
++        }
++      }
++    }
++
++    const pruned = store.pruneWatchlist(nowSeconds - config.drops.windowTrailSeconds);
++    if (pruned > 0) log.debug('pruned expired watch entries', { pruned });
++  }
++
++  /** Fast tier: only drops inside their go-live window get polled. */
++  private async pollActiveWindows(stats: WatcherStats, now: number): Promise<void> {
++    const { config, client, store } = this.deps;
++    const nowSeconds = Math.floor(now / 1000);
++
++    const active = store.listWatch().filter((entry) =>
++      isInActiveWindow(entry.startTime, {
++        nowSeconds,
++        leadSeconds: config.drops.windowLeadSeconds,
++        trailSeconds: config.drops.windowTrailSeconds,
++      }),
++    );
++
++    for (const entry of active) {
++      if (store.isSlugMinted(entry.slug)) {
++        store.removeWatch(entry.slug);
++        continue;
++      }
++
++      stats.polled += 1;
++      let drop;
++      try {
++        drop = await getDrop(client, entry.slug);
++      } catch (err) {
++        log.debug('drop detail fetch failed', { slug: entry.slug, err: shortError(err) });
++        continue;
++      }
++      if (!drop) continue;
++
++      const verdict = evaluateDrop(drop, {
++        chain: config.drops.chain,
++        maxMintPriceWei: config.drops.maxMintPriceWei,
++        quantity: config.drops.quantity,
++        nowSeconds,
++        windowLeadSeconds: config.drops.windowLeadSeconds,
++      });
++
++      if (verdict.action === 'mint') {
++        await this.attemptMint(entry.slug, verdict, stats, now);
++      } else if (verdict.action === 'skip') {
++        log.info('dropping from watchlist', { slug: entry.slug, reasons: verdict.reasons });
++        store.removeWatch(entry.slug);
++      } else if (verdict.stage?.startTime !== undefined) {
++        // Start time moved; keep the watchlist in sync with the API.
++        store.upsertWatch({ ...entry, startTime: verdict.stage.startTime, updatedAt: now });
++      }
++    }
++  }
++
++  private async attemptMint(
++    slug: string,
++    verdict: DropVerdict,
++    stats: WatcherStats,
++    now: number,
++  ): Promise<void> {
++    const { config, client, store, ctx } = this.deps;
++
++    if (killSwitchEngaged(config.killSwitchPath)) {
++      log.warn('kill switch present — not minting drop', { slug });
++      return;
++    }
++    if (store.isSlugMinted(slug)) return;
++
++    // One attempt per stage window, so a reverting drop cannot be retried in a
++    // tight loop for the whole window.
++    const key = verdict.stage ? stageKey(slug, verdict.stage) : `${slug}:unknown`;
++    if (store.hasAttemptedStage(key)) {
++      log.debug('stage already attempted', { slug, key });
++      return;
++    }
++
++    const quantity = verdict.quantity ?? config.drops.quantity;
++    log.info('public free stage open', { slug, quantity, reasons: verdict.reasons });
++
++    let tx;
++    try {
++      tx = await buildDropMintTransaction(client, slug, ctx.account, quantity);
++    } catch (err) {
++      log.warn('could not build drop mint transaction', { slug, err: shortError(err) });
++      return;
++    }
++
++    store.markStageAttempted(key, now);
++    const record = await executeDropMint(slug, tx, { ctx, config, store });
++
++    if (record.status === 'minted' || record.status === 'dry-run') {
++      store.recordSlugMint(slug, record);
++      store.removeWatch(slug);
++      if (record.status === 'minted') stats.minted += 1;
++      else stats.dryRun += 1;
++      return;
++    }
++
++    if (record.status === 'skipped') {
++      // Transient (gas cap, budget): reopen the stage for a later retry while
++      // the window is still open.
++      stats.skipped += 1;
++      store.clearStageAttempt(key);
++      return;
++    }
++
++    stats.rejected += 1;
++  }
++}
+diff --git a/tests/dropParser.test.ts b/tests/dropParser.test.ts
+new file mode 100644
+index 0000000..9c3ffcd
+--- /dev/null
++++ b/tests/dropParser.test.ts
+@@ -0,0 +1,243 @@
++import { parseEther } from 'viem';
++import { describe, expect, it } from 'vitest';
++import { evaluateDrop, isInActiveWindow, stageKey } from '../src/drops/parser';
++import {
++  classifyStage,
++  normalizeDrop,
++  parsePriceToWei,
++  parseTimeToSeconds,
++  type NormalizedDrop,
++} from '../src/opensea/drops';
++
++const NOW = 1_800_000_000;
++
++function drop(over: Partial<NormalizedDrop> = {}): NormalizedDrop {
++  return {
++    slug: 'cool-drop',
++    name: 'Cool Drop',
++    chain: 'ethereum',
++    stages: [{ kind: 'public', label: 'Public', mintPriceWei: 0n, startTime: NOW - 10 }],
++    ...over,
++  };
++}
++
++const opts = { chain: 'ethereum', maxMintPriceWei: 0n, quantity: 1, nowSeconds: NOW };
++
++describe('parsePriceToWei', () => {
++  it('reads wei strings, ETH decimal strings, and nested shapes', () => {
++    expect(parsePriceToWei('0')).toBe(0n);
++    expect(parsePriceToWei('1000000000000000000')).toBe(10n ** 18n);
++    expect(parsePriceToWei('0.05')).toBe(parseEther('0.05'));
++    expect(parsePriceToWei({ wei: '250' })).toBe(250n);
++    expect(parsePriceToWei({ value: '0' })).toBe(0n);
++    expect(parsePriceToWei(0)).toBe(0n);
++  });
++
++  it('returns undefined for unparseable input rather than guessing zero', () => {
++    expect(parsePriceToWei(undefined)).toBeUndefined();
++    expect(parsePriceToWei(null)).toBeUndefined();
++    expect(parsePriceToWei('free')).toBeUndefined();
++    expect(parsePriceToWei('')).toBeUndefined();
++  });
++});
++
++describe('parseTimeToSeconds', () => {
++  it('accepts seconds, milliseconds, numeric strings and ISO strings', () => {
++    expect(parseTimeToSeconds(NOW)).toBe(NOW);
++    expect(parseTimeToSeconds(NOW * 1000)).toBe(NOW);
++    expect(parseTimeToSeconds(String(NOW))).toBe(NOW);
++    expect(parseTimeToSeconds('2026-07-29T00:00:00Z')).toBe(Math.floor(Date.parse('2026-07-29T00:00:00Z') / 1000));
++  });
++
++  it('returns undefined for junk', () => {
++    expect(parseTimeToSeconds('soon')).toBeUndefined();
++    expect(parseTimeToSeconds(undefined)).toBeUndefined();
++  });
++});
++
++describe('classifyStage', () => {
++  it('recognises public and allowlist labels case-insensitively', () => {
++    expect(classifyStage('Public')).toBe('public');
++    expect(classifyStage('PUBLIC SALE')).toBe('public');
++    expect(classifyStage('Allowlist')).toBe('allowlist');
++    expect(classifyStage('presale')).toBe('allowlist');
++    expect(classifyStage('VIP')).toBe('allowlist');
++    expect(classifyStage('something else')).toBe('unknown');
++    expect(classifyStage(undefined)).toBe('unknown');
++  });
++});
++
++describe('normalizeDrop', () => {
++  it('handles snake_case payloads', () => {
++    const normalized = normalizeDrop({
++      collection_slug: 'snake-drop',
++      chain: 'Ethereum',
++      total_supply: 10,
++      max_supply: 100,
++      contract_address: '0x1234567890123456789012345678901234567890',
++      stages: [{ stage_type: 'Public', mint_price: '0', start_time: NOW, max_per_wallet: 3 }],
++    });
++
++    expect(normalized?.slug).toBe('snake-drop');
++    expect(normalized?.chain).toBe('ethereum');
++    expect(normalized?.totalSupply).toBe(10);
++    expect(normalized?.maxSupply).toBe(100);
++    expect(normalized?.contract).toBe('0x1234567890123456789012345678901234567890');
++    expect(normalized?.stages[0]).toMatchObject({ kind: 'public', mintPriceWei: 0n, maxPerWallet: 3 });
++  });
++
++  it('handles camelCase payloads', () => {
++    const normalized = normalizeDrop({
++      collection: 'camel-drop',
++      stages: [{ stage: 'Public', mintPrice: { wei: '0' }, startTime: NOW }],
++    });
++    expect(normalized?.slug).toBe('camel-drop');
++    expect(normalized?.stages[0]?.mintPriceWei).toBe(0n);
++  });
++
++  it('marks an unparseable price as not-free rather than free', () => {
++    const normalized = normalizeDrop({ collection: 'x', stages: [{ stage: 'Public' }] });
++    expect(normalized?.stages[0]?.mintPriceWei).toBe(-1n);
++  });
++
++  it('returns undefined without a slug', () => {
++    expect(normalizeDrop({ stages: [] })).toBeUndefined();
++    expect(normalizeDrop('nope')).toBeUndefined();
++  });
++});
++
++describe('evaluateDrop', () => {
++  it('mints an open, free, public stage', () => {
++    const verdict = evaluateDrop(drop(), opts);
++    expect(verdict.action).toBe('mint');
++    expect(verdict.quantity).toBe(1);
++  });
++
++  it('watches a public stage that has not opened yet', () => {
++    const verdict = evaluateDrop(
++      drop({ stages: [{ kind: 'public', mintPriceWei: 0n, startTime: NOW + 300 }] }),
++      opts,
++    );
++    expect(verdict.action).toBe('watch');
++    expect(verdict.reasons[0]).toContain('opens in 300s');
++  });
++
++  it('skips the wrong chain', () => {
++    const verdict = evaluateDrop(drop({ chain: 'base' }), opts);
++    expect(verdict.action).toBe('skip');
++    expect(verdict.reasons[0]).toContain('not ethereum');
++  });
++
++  it('skips a priced public stage', () => {
++    const verdict = evaluateDrop(
++      drop({ stages: [{ kind: 'public', mintPriceWei: parseEther('0.01'), startTime: NOW - 1 }] }),
++      opts,
++    );
++    expect(verdict.action).toBe('skip');
++    expect(verdict.reasons[0]).toContain('over the 0 wei ceiling');
++  });
++
++  it('skips a stage whose price could not be parsed', () => {
++    const verdict = evaluateDrop(
++      drop({ stages: [{ kind: 'public', mintPriceWei: -1n, startTime: NOW - 1 }] }),
++      opts,
++    );
++    expect(verdict.action).toBe('skip');
++    expect(verdict.reasons[0]).toContain('could not be parsed');
++  });
++
++  it('ignores an active allowlist stage', () => {
++    const verdict = evaluateDrop(
++      drop({ stages: [{ kind: 'allowlist', mintPriceWei: 0n, startTime: NOW - 100 }] }),
++      opts,
++    );
++    expect(verdict.action).toBe('skip');
++    expect(verdict.reasons[0]).toBe('no public stage');
++  });
++
++  it('picks the public stage even when an allowlist stage is also present', () => {
++    const verdict = evaluateDrop(
++      drop({
++        stages: [
++          { kind: 'allowlist', mintPriceWei: 0n, startTime: NOW - 500 },
++          { kind: 'public', label: 'Public', mintPriceWei: 0n, startTime: NOW - 5 },
++        ],
++      }),
++      opts,
++    );
++    expect(verdict.action).toBe('mint');
++    expect(verdict.stage?.kind).toBe('public');
++  });
++
++  it('skips a sold-out drop', () => {
++    const verdict = evaluateDrop(drop({ totalSupply: 100, maxSupply: 100 }), opts);
++    expect(verdict.action).toBe('skip');
++    expect(verdict.reasons[0]).toContain('sold out');
++  });
++
++  it('mints when supply remains', () => {
++    expect(evaluateDrop(drop({ totalSupply: 99, maxSupply: 100 }), opts).action).toBe('mint');
++  });
++
++  it('skips a stage that has already ended', () => {
++    const verdict = evaluateDrop(
++      drop({ stages: [{ kind: 'public', mintPriceWei: 0n, startTime: NOW - 500, endTime: NOW - 100 }] }),
++      opts,
++    );
++    expect(verdict.action).toBe('skip');
++    expect(verdict.reasons[0]).toContain('already ended');
++  });
++
++  it('clamps quantity to maxPerWallet', () => {
++    const verdict = evaluateDrop(
++      drop({ stages: [{ kind: 'public', mintPriceWei: 0n, startTime: NOW - 1, maxPerWallet: 2 }] }),
++      { ...opts, quantity: 5 },
++    );
++    expect(verdict.quantity).toBe(2);
++  });
++
++  it('skips when the wallet limit is zero', () => {
++    const verdict = evaluateDrop(
++      drop({ stages: [{ kind: 'public', mintPriceWei: 0n, startTime: NOW - 1, maxPerWallet: 0 }] }),
++      opts,
++    );
++    expect(verdict.action).toBe('skip');
++    expect(verdict.reasons[0]).toContain('0 per wallet');
++  });
++
++  it('skips a drop with no stages at all', () => {
++    expect(evaluateDrop(drop({ stages: [] }), opts).action).toBe('skip');
++  });
++
++  it('allows a priced stage when the ceiling is raised', () => {
++    const verdict = evaluateDrop(
++      drop({ stages: [{ kind: 'public', mintPriceWei: parseEther('0.01'), startTime: NOW - 1 }] }),
++      { ...opts, maxMintPriceWei: parseEther('0.02') },
++    );
++    expect(verdict.action).toBe('mint');
++  });
++});
++
++describe('isInActiveWindow', () => {
++  const window = { leadSeconds: 120, trailSeconds: 600 };
++
++  it('is true just inside the lead and trail edges', () => {
++    expect(isInActiveWindow(NOW + 120, { ...window, nowSeconds: NOW })).toBe(true);
++    expect(isInActiveWindow(NOW - 600, { ...window, nowSeconds: NOW })).toBe(true);
++  });
++
++  it('is false outside the window on either side', () => {
++    expect(isInActiveWindow(NOW + 121, { ...window, nowSeconds: NOW })).toBe(false);
++    expect(isInActiveWindow(NOW - 601, { ...window, nowSeconds: NOW })).toBe(false);
++  });
++});
++
++describe('stageKey', () => {
++  it('is stable for the same stage and distinct across stages', () => {
++    const a = { kind: 'public' as const, label: 'Public', mintPriceWei: 0n, startTime: 100 };
++    const b = { kind: 'public' as const, label: 'Public', mintPriceWei: 0n, startTime: 200 };
++    expect(stageKey('s', a)).toBe(stageKey('s', a));
++    expect(stageKey('s', a)).not.toBe(stageKey('s', b));
++    expect(stageKey('s', a)).not.toBe(stageKey('other', a));
++  });
++});
+diff --git a/tests/filter.test.ts b/tests/filter.test.ts
+index a8edbc8..fb86ca4 100644
+--- a/tests/filter.test.ts
++++ b/tests/filter.test.ts
+@@ -4,6 +4,7 @@ import { join } from 'node:path';
+ import { describe, expect, it } from 'vitest';
+ import { filterCandidates } from '../src/discovery/index';
+ import type { Config } from '../src/config';
++import { testConfig } from './helpers/config';
+ import { Store } from '../src/state/store';
+ import type { Address, Candidate } from '../src/types';
+ 
+@@ -13,29 +14,7 @@ const B = '0xbBBbBBBbbBBBbbbBbbBbbbbbBBbBbbbbBbBbBBbb' as Address;
+ const NOW = 1_800_000_000_000;
+ 
+ function baseConfig(over: Partial<Config> = {}): Config {
+-  return {
+-    dryRun: true,
+-    pollIntervalMs: 15_000,
+-    statePath: '.automint/state.json',
+-    killSwitchPath: '.automint/STOP',
+-    chains: [],
+-    mint: {
+-      quantity: 1,
+-      maxAgeSeconds: 3600,
+-      confirmations: 1,
+-      maxGasUnits: 500_000,
+-      maxPriorityFeeGwei: 1.5,
+-      requireTransferToSelf: true,
+-    },
+-    discovery: {
+-      opensea: { enabled: false, limit: 50 },
+-      onchain: { enabled: true, blockLookback: 60, maxCandidatesPerScan: 40 },
+-    },
+-    denylist: [],
+-    allowlist: [],
+-    allowlistOnly: false,
+-    ...over,
+-  } as Config;
++  return testConfig(over);
+ }
+ 
+ function candidate(contract: Address, over: Partial<Candidate> = {}): Candidate {
+diff --git a/tests/helpers/config.ts b/tests/helpers/config.ts
+new file mode 100644
+index 0000000..2d307cf
+--- /dev/null
++++ b/tests/helpers/config.ts
+@@ -0,0 +1,54 @@
++import type { ChainConfig, Config } from '../../src/config';
++
++/** A fully-populated config for tests, so each file only states what it varies. */
++export function testConfig(over: Partial<Config> = {}): Config {
++  return {
++    dryRun: true,
++    pollIntervalMs: 15_000,
++    statePath: '.automint/state.json',
++    killSwitchPath: '.automint/STOP',
++    chains: [],
++    drops: {
++      enabled: false,
++      chain: 'ethereum',
++      chainId: 1,
++      listTypes: ['upcoming', 'featured'],
++      catalogPollMs: 60_000,
++      activePollMs: 2_500,
++      windowLeadSeconds: 120,
++      windowTrailSeconds: 600,
++      maxMintPriceWei: 0n,
++      maxGasPriceGwei: 30,
++      quantity: 1,
++    },
++    mint: {
++      quantity: 1,
++      maxAgeSeconds: 3600,
++      confirmations: 1,
++      maxGasUnits: 500_000,
++      maxPriorityFeeGwei: 1.5,
++      requireTransferToSelf: true,
++    },
++    discovery: {
++      opensea: { enabled: false, limit: 50 },
++      onchain: { enabled: true, blockLookback: 60, maxCandidatesPerScan: 40 },
++    },
++    denylist: [],
++    allowlist: [],
++    allowlistOnly: false,
++    ...over,
++  };
++}
++
++export function testChain(rpcUrl: string, over: Partial<ChainConfig> = {}): ChainConfig {
++  return {
++    id: 31337,
++    name: 'mock',
++    rpcUrl,
++    enabled: true,
++    nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
++    maxGasCostWei: 10n ** 18n,
++    dailyGasBudgetWei: 10n ** 18n,
++    ...over,
++  };
++}
+diff --git a/tests/helpers/mockOpensea.ts b/tests/helpers/mockOpensea.ts
+new file mode 100644
+index 0000000..12de73a
+--- /dev/null
++++ b/tests/helpers/mockOpensea.ts
+@@ -0,0 +1,109 @@
++import { createServer, type Server } from 'node:http';
++
++export interface MockOpenseaOptions {
++  /** Drop payloads keyed by list type, returned verbatim from /drops. */
++  lists?: Record<string, unknown[]>;
++  /** Drop detail payloads keyed by slug, returned from /drops/{slug}. */
++  details?: Record<string, unknown>;
++  /** Built mint transactions keyed by slug, returned from /drops/{slug}/mint. */
++  mintTx?: Record<string, unknown>;
++  /** Fail this many requests with 429 before succeeding. */
++  rateLimitFirst?: number;
++  /** Seconds to advertise in Retry-After on those 429s. */
++  retryAfterSeconds?: number;
++}
++
++export interface MockOpensea {
++  url: string;
++  close: () => Promise<void>;
++  /** "<METHOD> <path>" for every request received. */
++  requests: string[];
++  /** API keys seen, so tests can assert the header is sent. */
++  apiKeys: string[];
++  /** Bodies of POST requests, parsed. */
++  postBodies: unknown[];
++}
++
++/** Stands in for api.opensea.io/api/v2 so the client is exercised for real. */
++export async function startMockOpensea(options: MockOpenseaOptions = {}): Promise<MockOpensea> {
++  const requests: string[] = [];
++  const apiKeys: string[] = [];
++  const postBodies: unknown[] = [];
++  let rateLimitsLeft = options.rateLimitFirst ?? 0;
++
++  const server: Server = createServer((req, res) => {
++    let body = '';
++    req.on('data', (chunk) => {
++      body += chunk;
++    });
++    req.on('end', () => {
++      const url = new URL(req.url ?? '/', 'http://localhost');
++      requests.push(`${req.method} ${url.pathname}`);
++      const key = req.headers['x-api-key'];
++      if (typeof key === 'string') apiKeys.push(key);
++
++      const send = (status: number, payload: unknown, headers: Record<string, string> = {}) => {
++        res.writeHead(status, { 'content-type': 'application/json', ...headers });
++        res.end(JSON.stringify(payload));
++      };
++
++      if (rateLimitsLeft > 0) {
++        rateLimitsLeft -= 1;
++        const headers: Record<string, string> = options.retryAfterSeconds
++          ? { 'retry-after': String(options.retryAfterSeconds) }
++          : {};
++        send(429, { error: 'rate limited' }, headers);
++        return;
++      }
++
++      // POST /drops/{slug}/mint
++      const mintMatch = url.pathname.match(/^\/drops\/([^/]+)\/mint$/);
++      if (req.method === 'POST' && mintMatch) {
++        const slug = decodeURIComponent(mintMatch[1] ?? '');
++        postBodies.push(body ? JSON.parse(body) : undefined);
++        const tx = options.mintTx?.[slug];
++        if (!tx) {
++          send(404, { error: `no mint tx for ${slug}` });
++          return;
++        }
++        send(200, tx);
++        return;
++      }
++
++      // GET /drops/{slug}
++      const detailMatch = url.pathname.match(/^\/drops\/([^/]+)$/);
++      if (req.method === 'GET' && detailMatch) {
++        const slug = decodeURIComponent(detailMatch[1] ?? '');
++        const detail = options.details?.[slug];
++        if (!detail) {
++          send(404, { error: `no such drop ${slug}` });
++          return;
++        }
++        send(200, detail);
++        return;
++      }
++
++      // GET /drops?type=...
++      if (req.method === 'GET' && url.pathname === '/drops') {
++        const type = url.searchParams.get('type') ?? 'upcoming';
++        send(200, { drops: options.lists?.[type] ?? [] });
++        return;
++      }
++
++      send(404, { error: 'not found' });
++    });
++  });
++
++  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
++  const addr = server.address();
++  if (addr === null || typeof addr === 'string') throw new Error('mock opensea failed to bind');
++
++  return {
++    url: `http://127.0.0.1:${addr.port}`,
++    requests,
++    apiKeys,
++    postBodies,
++    close: () =>
++      new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve()))),
++  };
++}
+diff --git a/tests/run.integration.test.ts b/tests/run.integration.test.ts
+index 984efbe..c4824a5 100644
+--- a/tests/run.integration.test.ts
++++ b/tests/run.integration.test.ts
+@@ -5,6 +5,7 @@ import { toFunctionSelector } from 'viem';
+ import { afterEach, describe, expect, it } from 'vitest';
+ import type { Config, LoadedConfig } from '../src/config';
+ import { createRunner } from '../src/run';
++import { testChain, testConfig } from './helpers/config';
+ import type { Address } from '../src/types';
+ import { startMockNode, type MockNode } from './helpers/mockNode';
+ 
+@@ -15,40 +16,12 @@ const SELECTOR_PUBLIC_MINT = toFunctionSelector('publicMint(uint256)');
+ /** Absolute paths keep each run's state out of the repo and out of other tests. */
+ function loaded(node: MockNode, over: Partial<Config> = {}): LoadedConfig {
+   const dir = mkdtempSync(join(tmpdir(), 'automint-run-'));
+-  const config = {
+-    dryRun: true,
+-    pollIntervalMs: 15_000,
++  const config = testConfig({
+     statePath: join(dir, 'state.json'),
+     killSwitchPath: join(dir, 'STOP'),
+-    chains: [
+-      {
+-        id: 31337,
+-        name: 'mock',
+-        rpcUrl: node.url,
+-        enabled: true,
+-        nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
+-        maxGasCostWei: 10n ** 18n,
+-        dailyGasBudgetWei: 10n ** 18n,
+-      },
+-    ],
+-    mint: {
+-      quantity: 1,
+-      maxAgeSeconds: 3600,
+-      confirmations: 1,
+-      maxGasUnits: 500_000,
+-      maxPriorityFeeGwei: 1.5,
+-      requireTransferToSelf: true,
+-    },
+-    discovery: {
+-      opensea: { enabled: false, limit: 50 },
+-      onchain: { enabled: true, blockLookback: 60, maxCandidatesPerScan: 40 },
+-    },
+-    denylist: [],
+-    allowlist: [],
+-    allowlistOnly: false,
++    chains: [testChain(node.url)],
+     ...over,
+-  } as Config;
+-
++  });
+   return { config, secrets: {}, path: join(dir, 'automint.config.json') };
+ }
+ 
+diff --git a/tests/screen.integration.test.ts b/tests/screen.integration.test.ts
+index f258b4a..b94534f 100644
+--- a/tests/screen.integration.test.ts
++++ b/tests/screen.integration.test.ts
+@@ -7,6 +7,7 @@ import { makeChainContext, type ChainContext } from '../src/chains';
+ import type { ChainConfig, Config } from '../src/config';
+ import { screenOne } from '../src/screening/index';
+ import { Store } from '../src/state/store';
++import { testChain, testConfig } from './helpers/config';
+ import type { Address, Candidate } from '../src/types';
+ import { startMockNode, type MockNode } from './helpers/mockNode';
+ 
+@@ -19,42 +20,12 @@ const SELECTOR_PUBLIC_MINT = toFunctionSelector('publicMint(uint256)');
+ const SELECTOR_MINT_QTY = toFunctionSelector('mint(uint256)');
+ 
+ function chainConfig(rpcUrl: string, over: Partial<ChainConfig> = {}): ChainConfig {
+-  return {
+-    id: 31337,
+-    name: 'mock',
+-    rpcUrl,
+-    enabled: true,
+-    nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
+-    maxGasCostWei: 10n ** 18n,
+-    dailyGasBudgetWei: 10n ** 18n,
+-    ...over,
+-  };
++  return testChain(rpcUrl, over);
+ }
+ 
+ function appConfig(over: Partial<Config['mint']> = {}): Config {
+-  return {
+-    dryRun: true,
+-    pollIntervalMs: 15_000,
+-    statePath: '.automint/state.json',
+-    killSwitchPath: '.automint/STOP',
+-    chains: [],
+-    mint: {
+-      quantity: 1,
+-      maxAgeSeconds: 3600,
+-      confirmations: 1,
+-      maxGasUnits: 500_000,
+-      maxPriorityFeeGwei: 1.5,
+-      requireTransferToSelf: true,
+-      ...over,
+-    },
+-    discovery: {
+-      opensea: { enabled: false, limit: 50 },
+-      onchain: { enabled: true, blockLookback: 60, maxCandidatesPerScan: 40 },
+-    },
+-    denylist: [],
+-    allowlist: [],
+-    allowlistOnly: false,
+-  } as Config;
++  const base = testConfig();
++  return testConfig({ mint: { ...base.mint, ...over } });
+ }
+ 
+ function candidate(contract: Address = CONTRACT): Candidate {
+diff --git a/tests/watcher.integration.test.ts b/tests/watcher.integration.test.ts
+new file mode 100644
+index 0000000..0f0000b
+--- /dev/null
++++ b/tests/watcher.integration.test.ts
+@@ -0,0 +1,318 @@
++import { mkdtempSync } from 'node:fs';
++import { tmpdir } from 'node:os';
++import { join } from 'node:path';
++import { encodeFunctionData, parseAbi, toFunctionSelector } from 'viem';
++import { afterEach, describe, expect, it } from 'vitest';
++import { makeChainContext } from '../src/chains';
++import type { Config } from '../src/config';
++import { OpenseaClient } from '../src/opensea/client';
++import { buildDropMintTransaction, getDrop, getDrops } from '../src/opensea/drops';
++import { Store } from '../src/state/store';
++import type { Address } from '../src/types';
++import { DropWatcher } from '../src/watcher';
++import { testChain, testConfig } from './helpers/config';
++import { startMockNode, type MockNode } from './helpers/mockNode';
++import { startMockOpensea, type MockOpensea } from './helpers/mockOpensea';
++
++const SEADROP = '0x1234567890123456789012345678901234567890' as Address;
++const MINTER = '0x000000000000000000000000000000000000dEaD' as Address;
++const SLUG = 'free-public-drop';
++
++const MINT_ABI = parseAbi(['function mintPublic(address nft, uint256 quantity)']);
++const MINT_DATA = encodeFunctionData({
++  abi: MINT_ABI,
++  functionName: 'mintPublic',
++  args: [SEADROP, 1n],
++});
++const MINT_SELECTOR = toFunctionSelector('mintPublic(address,uint256)');
++
++const NOW_SECONDS = () => Math.floor(Date.now() / 1000);
++
++function publicDrop(over: Record<string, unknown> = {}) {
++  return {
++    collection: SLUG,
++    name: 'Free Public Drop',
++    chain: 'ethereum',
++    contract: SEADROP,
++    totalSupply: 5,
++    maxSupply: 1000,
++    stages: [{ stage: 'Public', mintPrice: '0', startTime: NOW_SECONDS() - 5, maxPerWallet: 3 }],
++    ...over,
++  };
++}
++
++function config(over: Partial<Config> = {}): Config {
++  const dir = mkdtempSync(join(tmpdir(), 'automint-watch-'));
++  const base = testConfig();
++  return testConfig({
++    statePath: join(dir, 'state.json'),
++    killSwitchPath: join(dir, 'STOP'),
++    drops: { ...base.drops, enabled: true, chainId: 31337 },
++    ...over,
++  });
++}
++
++function makeWatcher(
++  node: MockNode,
++  os: MockOpensea,
++  over: Partial<Config> = {},
++): { watcher: DropWatcher; store: Store; config: Config } {
++  const cfg = config(over);
++  const store = Store.open(cfg.statePath);
++  const ctx = makeChainContext(testChain(node.url), {});
++  const client = new OpenseaClient({
++    apiKey: 'test-key',
++    baseUrl: os.url,
++    sleep: async () => {},
++  });
++  return { watcher: new DropWatcher({ ctx, config: cfg, store, client }), store, config: cfg };
++}
++
++let node: MockNode | undefined;
++let os: MockOpensea | undefined;
++
++afterEach(async () => {
++  await node?.close();
++  await os?.close();
++  node = undefined;
++  os = undefined;
++});
++
++async function bootNode() {
++  return startMockNode({
++    contract: SEADROP,
++    interfaceId: '0x80ac58cd',
++    mintableSelectors: [MINT_SELECTOR],
++    simulationRecipient: MINTER,
++  });
++}
++
++const MINT_TX = { transaction: { to: SEADROP, data: MINT_DATA, value: '0' } };
++
++describe('OpenseaClient', () => {
++  it('sends the API key and retries 429 with Retry-After', async () => {
++    os = await startMockOpensea({
++      lists: { upcoming: [publicDrop()] },
++      rateLimitFirst: 2,
++      retryAfterSeconds: 1,
++    });
++
++    const client = new OpenseaClient({ apiKey: 'test-key', baseUrl: os.url, sleep: async () => {} });
++    const drops = await getDrops(client, 'upcoming');
++
++    expect(drops).toHaveLength(1);
++    expect(os.apiKeys.every((k) => k === 'test-key')).toBe(true);
++    // Two 429s then success.
++    expect(os.requests).toHaveLength(3);
++  });
++
++  it('gives up after maxAttempts and throws', async () => {
++    os = await startMockOpensea({ lists: { upcoming: [] }, rateLimitFirst: 99 });
++    const client = new OpenseaClient({
++      apiKey: 'k',
++      baseUrl: os.url,
++      maxAttempts: 2,
++      sleep: async () => {},
++    });
++    await expect(getDrops(client, 'upcoming')).rejects.toThrow(/429/);
++  });
++
++  it('does not retry a 404', async () => {
++    os = await startMockOpensea({});
++    const client = new OpenseaClient({ apiKey: 'k', baseUrl: os.url, sleep: async () => {} });
++    await expect(getDrop(client, 'nope')).rejects.toThrow(/404/);
++    expect(os.requests).toHaveLength(1);
++  });
++});
++
++describe('buildDropMintTransaction', () => {
++  it('extracts to/data/value from the built transaction', async () => {
++    os = await startMockOpensea({ mintTx: { [SLUG]: MINT_TX } });
++    const client = new OpenseaClient({ apiKey: 'k', baseUrl: os.url, sleep: async () => {} });
++
++    const tx = await buildDropMintTransaction(client, SLUG, MINTER, 1);
++
++    expect(tx.to).toBe(SEADROP);
++    expect(tx.data).toBe(MINT_DATA);
++    expect(tx.value).toBe(0n);
++    expect(os.postBodies[0]).toEqual({ minter: MINTER, quantity: 1 });
++  });
++
++  it('rejects a response with no usable calldata', async () => {
++    os = await startMockOpensea({ mintTx: { [SLUG]: { to: SEADROP } } });
++    const client = new OpenseaClient({ apiKey: 'k', baseUrl: os.url, sleep: async () => {} });
++    await expect(buildDropMintTransaction(client, SLUG, MINTER, 1)).rejects.toThrow(/calldata/);
++  });
++});
++
++describe('DropWatcher', () => {
++  it('mints an already-open free public drop and dedupes by slug', async () => {
++    node = await bootNode();
++    os = await startMockOpensea({
++      lists: { upcoming: [publicDrop()] },
++      details: { [SLUG]: publicDrop() },
++      mintTx: { [SLUG]: MINT_TX },
++    });
++
++    const { watcher, store } = makeWatcher(node, os);
++    const stats = await watcher.tick();
++
++    expect(stats.dryRun).toBe(1);
++    expect(store.isSlugMinted(SLUG)).toBe(true);
++
++    // Second tick must not mint again.
++    const again = await watcher.tick(Date.now() + 60_001);
++    expect(again.dryRun).toBe(0);
++  });
++
++  it('requests exactly the clamped quantity', async () => {
++    node = await bootNode();
++    os = await startMockOpensea({
++      lists: { upcoming: [publicDrop()] },
++      mintTx: { [SLUG]: MINT_TX },
++    });
++
++    const base = testConfig();
++    const { watcher } = makeWatcher(node, os, {
++      drops: { ...base.drops, enabled: true, chainId: 31337, quantity: 10 },
++    });
++    await watcher.tick();
++
++    // maxPerWallet is 3, so 10 is clamped down.
++    expect(os.postBodies[0]).toEqual({ minter: MINTER, quantity: 3 });
++  });
++
++  it('watches an upcoming drop instead of minting it', async () => {
++    node = await bootNode();
++    const future = publicDrop({
++      stages: [{ stage: 'Public', mintPrice: '0', startTime: NOW_SECONDS() + 3600 }],
++    });
++    os = await startMockOpensea({ lists: { upcoming: [future] }, mintTx: { [SLUG]: MINT_TX } });
++
++    const { watcher, store } = makeWatcher(node, os);
++    const stats = await watcher.tick();
++
++    expect(stats.dryRun).toBe(0);
++    expect(stats.watching).toBe(1);
++    expect(store.listWatch()[0]?.slug).toBe(SLUG);
++    // Too far out to be polled yet.
++    expect(stats.polled).toBe(0);
++  });
++
++  it('fast-polls a drop inside its go-live window and mints when it opens', async () => {
++    node = await bootNode();
++    // Starts 30s out: inside the 120s lead window, so it gets fast-polled.
++    const soon = publicDrop({
++      stages: [{ stage: 'Public', mintPrice: '0', startTime: NOW_SECONDS() + 30 }],
++    });
++    os = await startMockOpensea({
++      lists: { upcoming: [soon] },
++      // Detail says it is already open.
++      details: { [SLUG]: publicDrop() },
++      mintTx: { [SLUG]: MINT_TX },
++    });
++
++    const { watcher } = makeWatcher(node, os);
++    const stats = await watcher.tick();
++
++    expect(stats.polled).toBe(1);
++    expect(stats.dryRun).toBe(1);
++    expect(os.requests).toContain(`GET /drops/${SLUG}`);
++  });
++
++  it('never mints a priced drop', async () => {
++    node = await bootNode();
++    const priced = publicDrop({
++      stages: [{ stage: 'Public', mintPrice: '50000000000000000', startTime: NOW_SECONDS() - 5 }],
++    });
++    os = await startMockOpensea({ lists: { upcoming: [priced] }, mintTx: { [SLUG]: MINT_TX } });
++
++    const { watcher, store } = makeWatcher(node, os);
++    const stats = await watcher.tick();
++
++    expect(stats.dryRun).toBe(0);
++    expect(store.isSlugMinted(SLUG)).toBe(false);
++    expect(os.requests.some((r) => r.includes('/mint'))).toBe(false);
++  });
++
++  it('never mints an allowlist-only drop', async () => {
++    node = await bootNode();
++    const allowlist = publicDrop({
++      stages: [{ stage: 'Allowlist', mintPrice: '0', startTime: NOW_SECONDS() - 5 }],
++    });
++    os = await startMockOpensea({ lists: { upcoming: [allowlist] }, mintTx: { [SLUG]: MINT_TX } });
++
++    const { watcher } = makeWatcher(node, os);
++    await watcher.tick();
++    expect(os.requests.some((r) => r.includes('/mint'))).toBe(false);
++  });
++
++  it('refuses a built transaction that asks for payment', async () => {
++    node = await bootNode();
++    os = await startMockOpensea({
++      lists: { upcoming: [publicDrop()] },
++      mintTx: { [SLUG]: { to: SEADROP, data: MINT_DATA, value: '1000000000000000' } },
++    });
++
++    const { watcher, store } = makeWatcher(node, os);
++    const stats = await watcher.tick();
++
++    expect(stats.dryRun).toBe(0);
++    expect(stats.rejected).toBe(1);
++    expect(store.isSlugMinted(SLUG)).toBe(false);
++  });
++
++  it('skips sending when the gas price cap is exceeded, and keeps the stage retryable', async () => {
++    node = await bootNode();
++    os = await startMockOpensea({
++      lists: { upcoming: [publicDrop()] },
++      mintTx: { [SLUG]: MINT_TX },
++    });
++
++    const base = testConfig();
++    const { watcher, store } = makeWatcher(node, os, {
++      // Mock node reports ~1.7 gwei maxFeePerGas; cap below that.
++      drops: { ...base.drops, enabled: true, chainId: 31337, maxGasPriceGwei: 0.001 },
++    });
++    const stats = await watcher.tick();
++
++    expect(stats.skipped).toBe(1);
++    expect(stats.dryRun).toBe(0);
++    expect(store.isSlugMinted(SLUG)).toBe(false);
++  });
++
++  it('honours the kill switch', async () => {
++    node = await bootNode();
++    os = await startMockOpensea({
++      lists: { upcoming: [publicDrop()] },
++      mintTx: { [SLUG]: MINT_TX },
++    });
++
++    const { watcher, config: cfg } = makeWatcher(node, os);
++    const { mkdirSync, writeFileSync } = await import('node:fs');
++    mkdirSync(join(cfg.killSwitchPath, '..'), { recursive: true });
++    writeFileSync(cfg.killSwitchPath, '', 'utf8');
++
++    const stats = await watcher.tick();
++    expect(stats.dryRun).toBe(0);
++    expect(os.requests.some((r) => r.includes('/mint'))).toBe(false);
++  });
++
++  it('self-paces the catalog poll', async () => {
++    node = await bootNode();
++    os = await startMockOpensea({ lists: { upcoming: [] } });
++
++    const { watcher } = makeWatcher(node, os);
++    const start = Date.now();
++    await watcher.tick(start);
++    const afterFirst = os.requests.length;
++
++    // Well inside catalogPollMs, so no second catalog fetch.
++    await watcher.tick(start + 1_000);
++    expect(os.requests.length).toBe(afterFirst);
++
++    // Past the interval, it refreshes again.
++    await watcher.tick(start + 60_001);
++    expect(os.requests.length).toBeGreaterThan(afterFirst);
++  });
++});
+-- 
+2.43.0
+
