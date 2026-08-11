@@ -5,15 +5,22 @@ Reads a list of addresses, asks an Ethereum JSON-RPC endpoint (Alchemy) how many
 transactions each one has, and splits the list into wallets that meet a minimum
 and wallets that do not.
 
-Two ways of counting are supported:
+Three ways of counting are supported:
 
-  nonce      eth_getTransactionCount -- the account nonce, i.e. the number of
-             transactions the wallet has *sent*. Exact, cheap (26 CU), and
-             batchable 100 at a time. This is the default.
+  both       Inbound *and* outbound activity. This is the default. It runs in
+             two stages: first the account nonce for everyone (cheap and
+             batched), which is the exact number of transactions the wallet has
+             sent; then, only for the wallets that are still short of the
+             threshold, one alchemy_getAssetTransfers call for inbound
+             transfers. Wallets that already clear the bar on outbound activity
+             never cost a transfer lookup at all.
 
-  transfers  alchemy_getAssetTransfers -- transfers in *and* out of the wallet.
-             Counts a wallet that only ever received funds. Costs 150 CU per
-             call and needs up to two calls per wallet, so it is much slower.
+  nonce      eth_getTransactionCount only -- outbound transactions, nothing
+             inbound. Exact, cheap (26 CU), batchable 100 at a time.
+
+  transfers  alchemy_getAssetTransfers in both directions. Same asset-transfer
+             semantics on each side, at 150 CU per call and up to two calls per
+             wallet, so it is by far the slowest option.
 
 Usage:
 
@@ -56,6 +63,14 @@ MAX_TRANSFER_PAGE = 1000
 
 class RpcError(RuntimeError):
     """An RPC call failed in a way that is not worth retrying."""
+
+
+class FatalRpcError(RpcError):
+    """The endpoint itself is unusable (bad key, bad URL) -- stop the whole run.
+
+    Distinct from RpcError so that a bad credential does not quietly mark every
+    wallet in the list as errored.
+    """
 
 
 # --------------------------------------------------------------------------
@@ -133,6 +148,7 @@ class Result:
     count: int
     capped: bool = False  # count stopped early at the threshold; true count may be higher
     error: str | None = None
+    partial: bool = False  # "both" mode: outbound is known, inbound still to come
 
 
 class AlchemyClient:
@@ -201,7 +217,7 @@ class AlchemyClient:
                 continue
 
             if response.status_code in (401, 403):
-                raise RpcError(f"HTTP {response.status_code} from RPC endpoint -- check the API key / URL")
+                raise FatalRpcError(f"HTTP {response.status_code} from RPC endpoint -- check the API key / URL")
 
             if response.status_code != 200:
                 raise RpcError(f"HTTP {response.status_code}: {response.text[:200]}")
@@ -230,6 +246,8 @@ def count_nonces(client: AlchemyClient, addresses: Sequence[str], block: str = "
 
     try:
         raw = client.call(payload)
+    except FatalRpcError:
+        raise
     except RpcError as exc:
         return [Result(addr, -1, error=str(exc)) for addr in addresses]
 
@@ -288,16 +306,24 @@ def count_transfers(
     threshold: int,
     categories: Sequence[str],
     exact: bool = False,
+    directions: Sequence[str] = ("fromAddress", "toAddress"),
+    start: int = 0,
 ) -> Result:
-    """Transfers in and out of a wallet.
+    """Count transfers for a wallet, in either or both directions.
+
+    `start` seeds the total with a count already known by other means -- "both"
+    mode passes the nonce here and then only asks about the inbound side.
 
     By default counting stops as soon as the threshold is reached -- we only need
     to know whether the wallet clears the bar, and stopping early saves a lot of
     compute units. Pass exact=True to page through everything.
     """
-    total = 0
+    total = start
+    if not exact and total >= threshold:
+        return Result(address, total, capped=True)
+
     try:
-        for direction in ("fromAddress", "toAddress"):
+        for direction in directions:
             page_key: str | None = None
             while True:
                 remaining = MAX_TRANSFER_PAGE if exact else max(threshold - total, 1)
@@ -307,6 +333,8 @@ def count_transfers(
                     return Result(address, total, capped=True)
                 if not page_key:
                     break
+    except FatalRpcError:
+        raise
     except RpcError as exc:
         return Result(address, -1, error=str(exc))
 
@@ -319,7 +347,14 @@ def count_transfers(
 
 
 def load_checkpoint(path: Path) -> dict[str, Result]:
-    """Read previously resolved wallets. Errors are not kept, so they get retried."""
+    """Read previously resolved wallets. Errors are not kept, so they get retried.
+
+    Partial records -- "both" mode wallets whose outbound count is known but
+    whose inbound lookup had not happened yet -- are kept and returned with
+    partial=True, so an interrupted run resumes at stage two rather than
+    re-fetching every nonce. A later record for the same address wins, which is
+    how a stage-two answer supersedes its stage-one partial.
+    """
     done: dict[str, Result] = {}
     if not path.exists():
         return done
@@ -332,13 +367,48 @@ def load_checkpoint(path: Path) -> dict[str, Result]:
             try:
                 record = json.loads(line)
                 if record.get("error"):
+                    done.pop(record["address"], None)
                     continue
                 done[record["address"]] = Result(
-                    record["address"], int(record["count"]), bool(record.get("capped", False))
+                    record["address"],
+                    int(record["count"]),
+                    bool(record.get("capped", False)),
+                    partial=bool(record.get("partial", False)),
                 )
             except (ValueError, KeyError, TypeError):
                 continue  # truncated final line from an interrupted run
     return done
+
+
+def run_signature(cfg: Config) -> dict:
+    """The settings a checkpoint's counts depend on.
+
+    Resuming across a change to any of these would mix incompatible answers --
+    a count capped at ">= 4" says nothing about a threshold of 10, and a nonce
+    is not an inbound transfer count.
+    """
+    return {
+        "mode": cfg.mode,
+        "min_tx": cfg.threshold,
+        "categories": list(cfg.categories),
+        "exact_counts": cfg.exact,
+    }
+
+
+def describe_signature_mismatch(meta_path: Path, cfg: Config) -> str | None:
+    """Human-readable description of how an existing checkpoint differs, if it does."""
+    if not meta_path.exists():
+        return None
+    try:
+        previous = json.loads(meta_path.read_text(encoding="utf-8"))
+    except (ValueError, OSError):
+        return None
+
+    current = run_signature(cfg)
+    changed = [key for key, value in current.items() if key in previous and previous[key] != value]
+    if not changed:
+        return None
+    return ", ".join(f"{key}={previous[key]!r} (now {current[key]!r})" for key in changed)
 
 
 class CheckpointWriter:
@@ -357,6 +427,7 @@ class CheckpointWriter:
                             "count": result.count,
                             "capped": result.capped,
                             "error": result.error,
+                            "partial": result.partial,
                         }
                     )
                     + "\n"
@@ -373,32 +444,34 @@ class CheckpointWriter:
 # --------------------------------------------------------------------------
 
 
-def run(
-    client: AlchemyClient,
-    addresses: Sequence[str],
-    mode: str,
-    threshold: int,
-    categories: Sequence[str],
-    batch_size: int,
+@dataclass
+class Config:
+    mode: str = "both"
+    threshold: int = 4
+    categories: Sequence[str] = ("external",)
+    batch_size: int = 100
+    workers: int = 5
+    exact: bool = False
+
+
+ProgressFn = Callable[[str, int, int], None]
+
+
+def _execute(
+    units: Sequence[list[str]],
+    work: Callable[[list[str]], list[Result]],
     workers: int,
     checkpoint: CheckpointWriter | None,
-    exact: bool = False,
-    on_progress: Callable[[int, int], None] | None = None,
+    on_progress: ProgressFn | None,
+    stage: str,
 ) -> list[Result]:
-    """Query every address, in parallel, writing to the checkpoint as we go."""
+    """Run one stage's units across a thread pool, checkpointing as answers land."""
     results: list[Result] = []
-    done = 0
-    total = len(addresses)
-
-    if mode == "nonce":
-        units: list[list[str]] = list(chunked(addresses, batch_size))
-        work: Callable[[list[str]], list[Result]] = lambda batch: count_nonces(client, batch)
-    else:
-        units = [[addr] for addr in addresses]
-        work = lambda batch: [count_transfers(client, batch[0], threshold, categories, exact)]
-
     if not units:
-        return []
+        return results
+
+    done = 0
+    total = sum(len(unit) for unit in units)
 
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = {pool.submit(work, unit): unit for unit in units}
@@ -416,8 +489,90 @@ def run(
                 checkpoint.write(batch_results)
             done += len(unit)
             if on_progress:
-                on_progress(done, total)
+                on_progress(stage, done, total)
 
+    return results
+
+
+def run(
+    client: AlchemyClient,
+    addresses: Sequence[str],
+    cfg: Config,
+    checkpoint: CheckpointWriter | None = None,
+    on_progress: ProgressFn | None = None,
+    resume_partials: Sequence[Result] = (),
+) -> list[Result]:
+    """Resolve a transaction count for every address.
+
+    In "both" mode this is two stages: batched nonces for everyone, then an
+    inbound transfer lookup for only those wallets the nonce alone did not carry
+    over the threshold. `resume_partials` are wallets from an earlier run whose
+    stage one is already done, so they skip straight to stage two.
+    """
+    results: list[Result] = []
+    pending_inbound: list[Result] = list(resume_partials)
+
+    if cfg.mode == "transfers":
+        return _execute(
+            [[addr] for addr in addresses],
+            lambda unit: [count_transfers(client, unit[0], cfg.threshold, cfg.categories, cfg.exact)],
+            cfg.workers,
+            checkpoint,
+            on_progress,
+            "transfers",
+        )
+
+    # Stage one: the nonce, which is the exact outbound transaction count.
+    def outbound(batch: list[str]) -> list[Result]:
+        counted = count_nonces(client, batch)
+        if cfg.mode == "both":
+            for result in counted:
+                # Wallets already over the bar are final; the rest need inbound.
+                result.partial = result.error is None and result.count < cfg.threshold
+        return counted
+
+    stage_one = _execute(
+        list(chunked(addresses, cfg.batch_size)),
+        outbound,
+        cfg.workers,
+        checkpoint,
+        on_progress,
+        "outbound",
+    )
+
+    results.extend(r for r in stage_one if not r.partial)
+    pending_inbound.extend(r for r in stage_one if r.partial)
+
+    if cfg.mode == "nonce" or not pending_inbound:
+        return results + pending_inbound
+
+    # Stage two: inbound transfers, only for wallets still short of the threshold.
+    outbound_counts = {r.address: r.count for r in pending_inbound}
+
+    def inbound(unit: list[str]) -> list[Result]:
+        address = unit[0]
+        return [
+            count_transfers(
+                client,
+                address,
+                cfg.threshold,
+                cfg.categories,
+                cfg.exact,
+                directions=("toAddress",),
+                start=outbound_counts[address],
+            )
+        ]
+
+    results.extend(
+        _execute(
+            [[addr] for addr in outbound_counts],
+            inbound,
+            cfg.workers,
+            checkpoint,
+            on_progress,
+            "inbound",
+        )
+    )
     return results
 
 
@@ -459,16 +614,25 @@ def write_outputs(out_dir: Path, results: Sequence[Result], threshold: int) -> d
     return {"passed": len(passed), "filtered": len(filtered), "errors": len(errored)}
 
 
-def estimate(count: int, mode: str, batch_size: int, cu_per_second: int) -> tuple[int, float]:
-    """Total compute units and a rough wall-clock estimate in seconds."""
+def estimate(count: int, mode: str, cu_per_second: int) -> tuple[int, int, float, float]:
+    """Best- and worst-case compute units, and the matching times in seconds.
+
+    The range is real rather than decorative: in "both" mode the cost depends on
+    how many wallets clear the threshold on outbound activity alone (no transfer
+    lookup at all) versus how many need the inbound stage.
+    """
     if mode == "nonce":
-        cu = count * CU_NONCE
-        requests_needed = -(-count // batch_size)
+        cu_low = cu_high = count * CU_NONCE
+    elif mode == "both":
+        cu_low = count * CU_NONCE  # everyone passes on the nonce alone
+        cu_high = count * (CU_NONCE + CU_TRANSFERS)  # everyone needs the inbound lookup
     else:
-        cu = count * CU_TRANSFERS * 2  # worst case: both directions
-        requests_needed = count * 2
-    seconds = cu / cu_per_second if cu_per_second else 0.0
-    return cu, max(seconds, requests_needed * 0.02)
+        cu_low = count * CU_TRANSFERS  # outbound alone answers it
+        cu_high = count * CU_TRANSFERS * 2  # both directions for every wallet
+
+    if not cu_per_second:
+        return cu_low, cu_high, 0.0, 0.0
+    return cu_low, cu_high, cu_low / cu_per_second, cu_high / cu_per_second
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -480,9 +644,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-tx", type=int, default=4, help="keep wallets with at least this many txs (default: 4)")
     parser.add_argument(
         "--mode",
-        choices=("nonce", "transfers"),
-        default="nonce",
-        help="nonce = outgoing txs, exact and fast (default); transfers = in+out, slower",
+        choices=("both", "nonce", "transfers"),
+        default="both",
+        help=(
+            "both = inbound + outbound, nonce for the outbound half (default); "
+            "nonce = outbound only; transfers = asset transfers both ways, slowest"
+        ),
     )
     parser.add_argument("--url", default=os.environ.get("ALCHEMY_URL"), help="RPC URL (or set ALCHEMY_URL)")
     parser.add_argument("--out", type=Path, default=Path("out"), help="output directory (default: ./out)")
@@ -492,12 +659,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--categories",
         default="external",
-        help="comma-separated transfer categories for --mode transfers (default: external)",
+        help="comma-separated transfer categories counted on the inbound side (default: external)",
     )
     parser.add_argument(
         "--exact-counts",
         action="store_true",
-        help="transfers mode: count every transfer instead of stopping at the threshold (much slower)",
+        help="count every transfer instead of stopping at the threshold (much slower)",
     )
     parser.add_argument("--cu-per-second", type=int, default=330, help="your Alchemy CU/s, for the time estimate")
     parser.add_argument("--no-resume", action="store_true", help="ignore any existing checkpoint and start over")
@@ -526,8 +693,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     if malformed:
         print(f"  skipped {len(malformed)} malformed rows (e.g. {malformed[0]!r})")
 
-    cu, seconds = estimate(len(addresses), args.mode, args.batch_size, args.cu_per_second)
-    print(f"mode={args.mode} min-tx={args.min_tx}  ~{cu:,} CU, ~{seconds / 60:.1f} min at {args.cu_per_second} CU/s")
+    cu_low, cu_high, sec_low, sec_high = estimate(len(addresses), args.mode, args.cu_per_second)
+    if cu_low == cu_high:
+        cost = f"~{cu_low:,} CU, ~{sec_low / 60:.1f} min"
+    else:
+        cost = f"{cu_low:,}-{cu_high:,} CU, {sec_low / 60:.0f}-{sec_high / 60:.0f} min"
+    print(f"mode={args.mode} min-tx={args.min_tx}  {cost} at {args.cu_per_second} CU/s")
 
     if args.dry_run:
         return 0
@@ -538,38 +709,55 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     args.out.mkdir(parents=True, exist_ok=True)
     checkpoint_path = args.out / "checkpoint.jsonl"
-    if args.no_resume and checkpoint_path.exists():
-        checkpoint_path.unlink()
+    meta_path = args.out / "meta.json"
+    if args.no_resume:
+        # Both, or the stale signature would still block the fresh run.
+        checkpoint_path.unlink(missing_ok=True)
+        meta_path.unlink(missing_ok=True)
+
+    cfg = Config(
+        mode=args.mode,
+        threshold=args.min_tx,
+        categories=categories,
+        batch_size=args.batch_size,
+        workers=args.workers,
+        exact=args.exact_counts,
+    )
+
+    stale = describe_signature_mismatch(meta_path, cfg)
+    if stale:
+        print(f"checkpoint in {args.out} was built with {stale}", file=sys.stderr)
+        print("its counts do not answer this question -- re-run with --no-resume or a different --out", file=sys.stderr)
+        return 2
+    meta_path.write_text(json.dumps(run_signature(cfg), indent=2), encoding="utf-8")
 
     cached = load_checkpoint(checkpoint_path)
+    known = set(addresses)
+    # Partials have their outbound half done and resume at the inbound stage.
+    partials = [r for a, r in cached.items() if r.partial and a in known]
+    # Scoped to the current input, so swapping the list does not leak old wallets
+    # from the checkpoint into the results.
+    finished = {a: r for a, r in cached.items() if not r.partial and a in known}
     pending = [addr for addr in addresses if addr not in cached]
-    if cached:
-        print(f"resuming: {len(cached)} already done, {len(pending)} to go")
 
+    if cached:
+        detail = f", {len(partials)} needing only the inbound stage" if partials else ""
+        print(f"resuming: {len(cached)} already done{detail}, {len(pending)} to go")
     client = AlchemyClient(args.url)
     writer = CheckpointWriter(checkpoint_path)
     started = time.monotonic()
 
-    def progress(done: int, total: int) -> None:
+    def progress(stage: str, done: int, total: int) -> None:
         elapsed = time.monotonic() - started
         rate = done / elapsed if elapsed > 0 else 0
         eta = (total - done) / rate if rate > 0 else 0
-        sys.stderr.write(f"\r  {done}/{total}  {rate:.0f}/s  eta {eta / 60:.1f}m  429s:{client.rate_limit_hits}   ")
+        sys.stderr.write(
+            f"\r  {stage}: {done}/{total}  {rate:.0f}/s  eta {eta / 60:.1f}m  429s:{client.rate_limit_hits}   "
+        )
         sys.stderr.flush()
 
     try:
-        fresh = run(
-            client,
-            pending,
-            args.mode,
-            args.min_tx,
-            categories,
-            args.batch_size,
-            args.workers,
-            writer,
-            args.exact_counts,
-            progress,
-        )
+        fresh = run(client, pending, cfg, writer, progress, resume_partials=partials)
     except RpcError as exc:
         sys.stderr.write("\n")
         print(f"fatal: {exc}", file=sys.stderr)
@@ -583,7 +771,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     sys.stderr.write("\n")
 
-    results = list(cached.values()) + fresh
+    results = list(finished.values()) + fresh
     counts = write_outputs(args.out, results, args.min_tx)
 
     total = counts["passed"] + counts["filtered"]
