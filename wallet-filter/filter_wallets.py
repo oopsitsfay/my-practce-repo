@@ -749,6 +749,20 @@ def write_outputs(out_dir: Path, results: Sequence[Result], threshold: int) -> d
     if errored:
         write_csv("errors.csv", ["address", "error"], ([r.address, r.error] for r in errored))
 
+    # Machine-readable outcome, for callers that are not a terminal -- CI job
+    # summaries, the web app, anything wanting the split without parsing stdout.
+    summary = {
+        "passed": len(passed),
+        "filtered": len(filtered),
+        "errors": len(errored),
+        "min_tx": threshold,
+        "total": len(passed) + len(filtered),
+    }
+    try:
+        (out_dir / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    except PermissionError as exc:
+        raise OutputLocked(out_dir / "summary.json") from exc
+
     return {"passed": len(passed), "filtered": len(filtered), "errors": len(errored)}
 
 

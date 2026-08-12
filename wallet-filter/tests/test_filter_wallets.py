@@ -565,6 +565,36 @@ def test_locked_output_exits_cleanly_instead_of_a_traceback(tmp_path, monkeypatc
     assert "passed.csv" in err and "Excel" in err and "checkpoint" in err
 
 
+def test_summary_json_matches_the_csvs(tmp_path):
+    results = [fw.Result(addr(1), 9), fw.Result(addr(2), 1), fw.Result(addr(3), -1, error="boom")]
+    fw.write_outputs(tmp_path, results, threshold=4)
+
+    summary = json.loads((tmp_path / "summary.json").read_text())
+    assert summary == {"passed": 1, "filtered": 1, "errors": 1, "min_tx": 4, "total": 2}
+
+
+def test_ci_summary_rendering(tmp_path):
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "summarize", Path(__file__).resolve().parents[2] / ".github" / "scripts" / "summarize.py"
+    )
+    summarize = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(summarize)
+
+    fw.write_outputs(tmp_path, [fw.Result(addr(1), 9), fw.Result(addr(2), 1)], threshold=4)
+    clean = summarize.render(tmp_path / "summary.json")
+    assert "**1** (50.0%)" in clean and "Unresolved" not in clean
+
+    fw.write_outputs(tmp_path, [fw.Result(addr(1), 9), fw.Result(addr(2), -1, error="x")], threshold=4)
+    with_errors = summarize.render(tmp_path / "summary.json")
+    assert "Unresolved" in with_errors and "Re-run this workflow" in with_errors
+
+    # A run that died before writing anything must not render a fake split.
+    missing = summarize.render(tmp_path / "nope.json")
+    assert "did not finish" in missing and "resume" in missing
+
+
 def test_no_errors_file_when_clean(tmp_path):
     fw.write_outputs(tmp_path, [fw.Result(addr(1), 9)], threshold=4)
     assert not (tmp_path / "errors.csv").exists()

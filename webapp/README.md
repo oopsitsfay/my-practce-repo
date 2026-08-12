@@ -41,10 +41,29 @@ an open instance would let anyone spend your compute units.
 | `PORT` | Listen port. Defaults to 7860. |
 | `MAX_UPLOAD_BYTES` | Upload cap. Defaults to 25 MB (~700k addresses). |
 
+## If you do not want to pay for hosting yet
+
+Free hosting that runs hour-long jobs is genuinely scarce, and it is worth being
+blunt about why rather than sending you round a loop of signups:
+
+| Option | Reality |
+| --- | --- |
+| **GitHub Actions** | **Free, no card.** Runs up to 6 hours. No web UI, but you trigger it from the browser and download the results. See `.github/workflows/filter-wallets.yml`. |
+| Render free tier | Web services are free but sleep after 15 minutes and have **no persistent disk** — a restart wipes the checkpoint mid-run. Not usable for this. |
+| Railway / Fly | Trial credit, then paid. Fine once you have ~$5/month. |
+| Oracle Cloud free tier | A genuinely free always-on VM, but signup needs card verification. |
+
+**If you are not paying for a host, use the GitHub Actions workflow.** This web
+app is the better experience and is ready for the day you want it — deploy it to
+Railway, Fly or a VPS with the instructions below and nothing changes about how
+it works.
+
 ## Deploying free, on Hugging Face Spaces
 
-Free CPU, no credit card, and — unlike most free tiers — it does not sleep after
-15 minutes of inactivity, which matters when a job runs for an hour.
+Worth a try if Docker Spaces are available on your account — free CPU, and
+unlike most free tiers it does not sleep after 15 minutes, which matters when a
+job runs for an hour. Some accounts are prompted to upgrade for Docker Spaces;
+if yours is, use the GitHub Actions route above instead.
 
 1. Create a Space at <https://huggingface.co/new-space>. Pick **Docker → Blank**,
    and set it **Private**.
@@ -119,6 +138,6 @@ pip install pytest
 python3 -m pytest tests/ -q
 ```
 
-21 tests covering auth, upload validation, a full job through the queue with the
+22 tests covering auth, upload validation, a full job through the queue with the
 correct split, downloads, resume, delete, and requeue-after-restart — all against
 a fake RPC, so no network and no compute units.
