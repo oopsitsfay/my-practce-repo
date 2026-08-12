@@ -1,4 +1,4 @@
-# title: Walley Filter
+# title: Wallet Filter
 sdk: docker
 app_port: 7860
 
