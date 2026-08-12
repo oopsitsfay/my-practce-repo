@@ -1,1 +1,6 @@
-# my-practce-repo
+# title: Walley Filter
+sdk: docker
+app_port: 7860
+
+
+my-practce-repo
