@@ -399,6 +399,35 @@ def test_client_prices_requests_by_compute_unit(monkeypatch):
     assert costs == [fw.CU_TRANSFERS]
 
 
+def test_endless_rate_limits_with_no_success_fail_fast(monkeypatch):
+    # The real-world case: the stated plan is higher than the key's actual plan,
+    # so every request is too expensive to ever fit. Grinding through retries
+    # forever is worse than saying so.
+    monkeypatch.setattr(fw.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(fw.AlchemyClient, "_wait_for_throttle", lambda self: None)
+    session = FakeSession(script=[FakeResponse(None, status_code=429)] * 200)
+    client = fw.AlchemyClient("http://fake", cu_per_second=0, max_retries=100, session_factory=lambda: session)
+
+    with pytest.raises(fw.FatalRpcError, match="lower it"):
+        client.call([{"id": 0}], cost=2600)
+    assert len(session.calls) < 20  # gave up early rather than burning 100 attempts
+
+
+def test_rate_limits_after_a_success_do_not_fail_fast(monkeypatch):
+    # A busy endpoint that is still making progress must not be killed off.
+    monkeypatch.setattr(fw.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(fw.AlchemyClient, "_wait_for_throttle", lambda self: None)
+    session = FakeSession(
+        script=[FakeResponse([{"id": 0, "result": "0x1"}])] + [FakeResponse(None, status_code=429)] * 40
+    )
+    client = fw.AlchemyClient("http://fake", cu_per_second=0, max_retries=30, session_factory=lambda: session)
+
+    client.call([{"id": 0}], cost=26)  # one success on the board
+    with pytest.raises(fw.RpcError) as caught:
+        client.call([{"id": 0}], cost=26)
+    assert not isinstance(caught.value, fw.FatalRpcError)  # exhausted retries, not declared doomed
+
+
 def test_a_429_slows_the_client_down_for_later_calls(monkeypatch):
     monkeypatch.setattr(fw.time, "sleep", lambda _s: None)
     session = FakeSession(

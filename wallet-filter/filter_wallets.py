@@ -246,6 +246,8 @@ class AlchemyClient:
         self._throttle_until = 0.0
         self._lock = threading.Lock()
         self.rate_limit_hits = 0
+        self.successes = 0
+        self._consecutive_rate_limits = 0
 
     @property
     def session(self) -> requests.Session:
@@ -263,10 +265,25 @@ class AlchemyClient:
                 return
             time.sleep(min(delay, 5.0))
 
+    # Enough consecutive rejections with nothing ever succeeding to conclude the
+    # requests themselves do not fit, rather than the endpoint being busy.
+    DOA_RATE_LIMITS = 8
+
     def _throttle(self, seconds: float) -> None:
         with self._lock:
             self.rate_limit_hits += 1
+            self._consecutive_rate_limits += 1
             self._throttle_until = max(self._throttle_until, time.monotonic() + seconds)
+            doomed = self.successes == 0 and self._consecutive_rate_limits >= self.DOA_RATE_LIMITS
+
+        if doomed:
+            # Nothing has ever got through, so waiting longer will not help: the
+            # per-request cost is above the plan's ceiling and always will be.
+            raise FatalRpcError(
+                f"every request has been rate limited ({self.rate_limit_hits} in a row, none succeeded). "
+                "The endpoint's real budget is lower than the CU/s this run was told to expect -- "
+                "lower it (the free tier is 330) so requests are smaller and properly paced."
+            )
 
     def call(self, payload: list[dict] | dict, cost: float = 0.0) -> list[dict] | dict:
         """POST a single request or a batch, retrying transient failures.
@@ -288,6 +305,11 @@ class AlchemyClient:
             if response.status_code == 429:
                 retry_after = response.headers.get("Retry-After")
                 delay = float(retry_after) if retry_after and retry_after.isdigit() else min(2**attempt, 30)
+                if self.successes == 0:
+                    # Nothing has worked yet, so this looks like requests that do
+                    # not fit rather than a busy endpoint. Backing off for half a
+                    # minute only delays telling the user something is wrong.
+                    delay = min(delay, 2.0)
                 self.limiter.penalize()  # pace slower from here on, not just this once
                 self._throttle(delay)
                 last_error = RuntimeError("429 rate limited")
@@ -311,6 +333,9 @@ class AlchemyClient:
                 time.sleep(min(2**attempt, 30))
                 continue
 
+            with self._lock:
+                self.successes += 1
+                self._consecutive_rate_limits = 0
             self.limiter.recover()
             return parsed
 
@@ -545,6 +570,10 @@ class Config:
 ProgressFn = Callable[[str, int, int], None]
 
 
+class Cancelled(RuntimeError):
+    """The caller asked the run to stop."""
+
+
 def _execute(
     units: Sequence[list[str]],
     work: Callable[[list[str]], list[Result]],
@@ -552,6 +581,7 @@ def _execute(
     checkpoint: CheckpointWriter | None,
     on_progress: ProgressFn | None,
     stage: str,
+    should_stop: Callable[[], bool] | None = None,
 ) -> list[Result]:
     """Run one stage's units across a thread pool, checkpointing as answers land."""
     results: list[Result] = []
@@ -561,13 +591,20 @@ def _execute(
     done = 0
     total = sum(len(unit) for unit in units)
 
+    def guarded(unit: list[str]) -> list[Result]:
+        # Checked per unit rather than mid-request, so a stop lands on a clean
+        # boundary and everything already answered stays in the checkpoint.
+        if should_stop and should_stop():
+            raise Cancelled()
+        return work(unit)
+
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = {pool.submit(work, unit): unit for unit in units}
+        futures = {pool.submit(guarded, unit): unit for unit in units}
         for future in as_completed(futures):
             unit = futures[future]
             try:
                 batch_results = future.result()
-            except RpcError:
+            except (RpcError, Cancelled):
                 raise
             except Exception as exc:  # noqa: BLE001 - one bad batch must not kill the run
                 batch_results = [Result(addr, -1, error=repr(exc)) for addr in unit]
@@ -589,6 +626,7 @@ def run(
     checkpoint: CheckpointWriter | None = None,
     on_progress: ProgressFn | None = None,
     resume_partials: Sequence[Result] = (),
+    should_stop: Callable[[], bool] | None = None,
 ) -> list[Result]:
     """Resolve a transaction count for every address.
 
@@ -608,6 +646,7 @@ def run(
             checkpoint,
             on_progress,
             "transfers",
+            should_stop,
         )
 
     # Stage one: the nonce, which is the exact outbound transaction count.
@@ -626,6 +665,7 @@ def run(
         checkpoint,
         on_progress,
         "outbound",
+        should_stop,
     )
 
     results.extend(r for r in stage_one if not r.partial)
@@ -659,6 +699,7 @@ def run(
             checkpoint,
             on_progress,
             "inbound",
+            should_stop,
         )
     )
     return results

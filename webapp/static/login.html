@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wallet filter</title>
+<link rel="stylesheet" href="/static/theme.css">
+<style>
+  body { display: grid; place-items: center; padding: 24px; }
+  .wrap { width: min(380px, 100%); }
+  .mark {
+    width: 42px; height: 42px; border-radius: 12px;
+    background: var(--green); display: grid; place-items: center;
+    margin-bottom: 22px;
+  }
+  .mark svg { width: 21px; height: 21px; }
+  form { padding: 34px 32px 30px; }
+  h1 { margin-bottom: 6px; }
+  .sub { color: var(--ink-soft); font-size: 14px; margin: 0 0 26px; }
+  button { width: 100%; margin-top: 14px; }
+  .error {
+    margin-top: 16px; padding: 9px 12px; font-size: 13px;
+    color: var(--rust); background: var(--paper-2);
+    border: 1px solid var(--line); border-radius: var(--radius-sm);
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <form class="card" method="post" action="/login">
+    <div class="mark">
+      <svg viewBox="0 0 24 24" fill="none" stroke="#f4efe3" stroke-width="2"
+           stroke-linecap="round" stroke-linejoin="round">
+        <path d="M3 5h18l-7 8v6l-4 2v-8z"/>
+      </svg>
+    </div>
+    <div class="eyebrow">Ethereum</div>
+    <h1>Wallet filter</h1>
+    <p class="sub">Filter wallet lists by on-chain transaction history.</p>
+
+    <label for="password">Password</label>
+    <input type="password" id="password" name="password" autofocus required
+           autocomplete="current-password" placeholder="••••••••">
+    <button type="submit">Sign in</button>
+
+    <div class="error" id="error" hidden>That password did not match.</div>
+  </form>
+</div>
+<script>
+  if (new URLSearchParams(location.search).has("error")) {
+    document.getElementById("error").hidden = false;
+  }
+</script>
+</body>
+</html>
