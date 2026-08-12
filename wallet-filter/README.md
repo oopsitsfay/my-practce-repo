@@ -7,11 +7,23 @@ threshold of **4 transactions**.
 
 ## Quick start
 
+Windows (`cmd` or PowerShell):
+
+```
+pip install requests
+python filter_wallets.py wallets.csv --min-tx 4 --url https://eth-mainnet.g.alchemy.com/v2/YOUR_KEY
+```
+
+macOS / Linux:
+
 ```bash
 pip install requests
 export ALCHEMY_URL="https://eth-mainnet.g.alchemy.com/v2/YOUR_KEY"
 python3 filter_wallets.py wallets.csv --min-tx 4
 ```
+
+There are wrappers for both -- `run.bat <url>` on Windows, `./run.sh <url>`
+elsewhere -- but they only do exactly the above.
 
 Output lands in `./out`:
 
