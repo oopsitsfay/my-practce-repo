@@ -1,0 +1,350 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wallet filter</title>
+<link rel="stylesheet" href="/theme.css">
+<style>
+  .wrap { max-width: 880px; margin: 0 auto; padding: 40px 24px 90px; }
+
+  header { display: flex; align-items: center; gap: 14px; margin-bottom: 36px; }
+  .mark { width: 36px; height: 36px; border-radius: 10px; background: var(--green);
+          display: grid; place-items: center; flex: none; }
+  .mark svg { width: 18px; height: 18px; }
+  header h1 { font-size: 22px; line-height: 1.1; }
+  header .eyebrow { margin-bottom: 3px; }
+  header .right { margin-left: auto; display: flex; align-items: center; gap: 12px; }
+  .repo { font: 12px var(--mono); color: var(--ink-faint); }
+
+  .banner[hidden] { display: none; }
+  .banner { display: block; padding: 13px 16px; margin-bottom: 24px; font-size: 14px;
+            color: var(--rust); background: var(--card); border: 1px solid var(--line);
+            border-left: 3px solid var(--rust); border-radius: var(--radius-sm); }
+
+  /* ---- sign in ---- */
+  /* A class or id level display beats the UA rule for [hidden], so both views
+     need to say it explicitly or they render on top of each other. */
+  #gate[hidden], #app[hidden] { display: none; }
+  #gate { display: grid; place-items: center; min-height: 82vh; }
+  #gate .card { padding: 34px 32px 30px; width: min(370px, 100%); }
+  #gate h1 { margin-bottom: 6px; }
+  #gate .sub { color: var(--ink-soft); font-size: 14px; margin: 0 0 24px; }
+  #gate button { width: 100%; margin-top: 14px; }
+  #gate .mark { margin-bottom: 20px; }
+
+  /* ---- composer ---- */
+  .composer { padding: 26px 28px 24px; margin-bottom: 40px; }
+  .composer h2 { margin-bottom: 20px; }
+  .field + .field, .grid + .field { margin-top: 18px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(158px, 1fr)); gap: 16px; margin-top: 18px; }
+  .composer footer { display: flex; align-items: center; gap: 16px; margin-top: 24px; }
+  .composer footer .hint { margin: 0; }
+
+  .rule { display: flex; align-items: center; gap: 14px; margin: 0 0 18px; }
+  .rule::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+  .count { font: 600 12px var(--sans); color: var(--ink-faint); }
+
+  /* ---- runs ---- */
+  .run { padding: 20px 22px; margin-bottom: 14px; }
+  .run-top { display: flex; align-items: center; gap: 11px; flex-wrap: wrap; }
+  .run-name { font-family: var(--serif); font-size: 16px; font-weight: 600; word-break: break-all; }
+  .spec { font-size: 12.5px; color: var(--ink-faint); margin-top: 5px; }
+  .spec span + span::before { content: "·"; margin: 0 7px; opacity: .5; }
+
+  .badge { font: 700 10px/1 var(--sans); letter-spacing: .1em; text-transform: uppercase;
+           padding: 5px 9px; border-radius: 20px; white-space: nowrap;
+           color: var(--ink-faint); background: var(--paper-2); border: 1px solid var(--line); }
+  .badge.running, .badge.success { color: var(--green); background: var(--green-wash); border-color: var(--green-soft); }
+  .badge.queued { color: var(--amber); }
+  .badge.failure, .badge.cancelled { color: var(--rust); }
+
+  .track { height: 5px; background: var(--paper-2); border: 1px solid var(--line-soft);
+           border-radius: 4px; overflow: hidden; margin: 16px 0 10px; }
+  .fill { height: 100%; width: 32%; background: var(--green); border-radius: 3px;
+          animation: slide 1.6s ease-in-out infinite; }
+  @keyframes slide { 0% { margin-left: -32%; } 100% { margin-left: 100%; } }
+  .status { font-size: 13.5px; color: var(--ink-soft); }
+
+  .outcome { display: flex; gap: 32px; flex-wrap: wrap; margin-top: 16px;
+             padding-top: 16px; border-top: 1px solid var(--line-soft); }
+  .stat .n { font-family: var(--serif); font-size: 26px; font-weight: 600; line-height: 1.1; display: block; }
+  .stat .k { font: 600 10.5px var(--sans); letter-spacing: .1em; text-transform: uppercase;
+             color: var(--ink-faint); margin-top: 4px; display: block; }
+  .stat.pass .n { color: var(--green); }
+  .stat.warn .n { color: var(--amber); }
+
+  .note { font-size: 13px; color: var(--amber); margin-top: 12px; }
+  .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 18px; align-items: center; }
+  .dl { font: 600 13px var(--sans); text-decoration: none; color: var(--green);
+        background: var(--green-wash); border: 1px solid transparent;
+        padding: 7px 13px; border-radius: var(--radius-sm); display: inline-flex; gap: 6px; }
+  .dl:hover { border-color: var(--green-soft); }
+  .dl.plain { color: var(--ink-soft); background: transparent; border-color: var(--line); }
+  .spacer { flex: 1; }
+
+  .empty { padding: 46px 24px; text-align: center; color: var(--ink-faint); font-size: 14px; }
+  .empty svg { width: 30px; height: 30px; opacity: .35; margin-bottom: 12px; }
+</style>
+</head>
+<body>
+
+<!-- ---------------- sign in ---------------- -->
+<div class="wrap" id="gate" hidden>
+  <form class="card" id="loginForm">
+    <div class="mark">
+      <svg viewBox="0 0 24 24" fill="none" stroke="#f4efe3" stroke-width="2"
+           stroke-linecap="round" stroke-linejoin="round"><path d="M3 5h18l-7 8v6l-4 2v-8z"/></svg>
+    </div>
+    <div class="eyebrow">Ethereum</div>
+    <h1>Wallet filter</h1>
+    <p class="sub">Filter wallet lists by on-chain transaction history.</p>
+    <label for="password">Password</label>
+    <input type="password" id="password" autocomplete="current-password" placeholder="••••••••" required>
+    <button type="submit">Sign in</button>
+    <div class="banner" id="loginError" hidden></div>
+  </form>
+</div>
+
+<!-- ---------------- app ---------------- -->
+<div class="wrap" id="app" hidden>
+  <header>
+    <div class="mark">
+      <svg viewBox="0 0 24 24" fill="none" stroke="#f4efe3" stroke-width="2"
+           stroke-linecap="round" stroke-linejoin="round"><path d="M3 5h18l-7 8v6l-4 2v-8z"/></svg>
+    </div>
+    <div>
+      <div class="eyebrow">Ethereum</div>
+      <h1>Wallet filter</h1>
+    </div>
+    <div class="right">
+      <span class="repo" id="repo"></span>
+      <button class="ghost" id="signout">Sign out</button>
+    </div>
+  </header>
+
+  <div class="banner" id="banner" hidden></div>
+
+  <section class="card composer">
+    <h2>New run</h2>
+    <form id="form">
+      <div class="field">
+        <label for="file">Wallet list</label>
+        <input type="file" id="file" name="file" accept=".csv,.txt" required>
+        <p class="hint">Uploaded to your repository, then handed to GitHub Actions to run.
+          Duplicates are removed and malformed rows reported.</p>
+      </div>
+
+      <div class="grid">
+        <div>
+          <label for="min_tx">Minimum transactions</label>
+          <input type="number" id="min_tx" name="min_tx" value="4" min="1">
+        </div>
+        <div>
+          <label for="mode">Count</label>
+          <select id="mode" name="mode">
+            <option value="both">In + out</option>
+            <option value="nonce">Outbound only</option>
+            <option value="transfers">Transfers both ways</option>
+          </select>
+        </div>
+        <div>
+          <label for="cu_per_second">Alchemy plan</label>
+          <select id="cu_per_second" name="cu_per_second">
+            <option value="330">Free — 330 CU/s</option>
+            <option value="660">Growth — 660 CU/s</option>
+            <option value="3000">Scale — 3000 CU/s</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="field">
+        <label for="categories">Inbound transfer types</label>
+        <input type="text" id="categories" name="categories" value="external">
+        <p class="hint"><code>external</code> is plain ETH. Add <code>erc20</code>,
+          <code>erc721</code>, <code>erc1155</code> to let token activity qualify a wallet.</p>
+      </div>
+
+      <footer>
+        <button type="submit" id="submit">Start run</button>
+        <p class="hint">Runs on GitHub, not here — roughly an hour for 8,000 wallets on the free tier.</p>
+      </footer>
+    </form>
+  </section>
+
+  <div class="rule">
+    <h2>Runs</h2>
+    <span class="count" id="runcount"></span>
+  </div>
+  <div id="runs"></div>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const fmt = (n) => (n ?? 0).toLocaleString();
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) =>
+  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+let timer = null;
+
+function elapsed(run) {
+  const start = new Date(run.created_at).getTime();
+  const end = run.status === "completed" ? new Date(run.updated_at).getTime() : Date.now();
+  const secs = Math.max(0, Math.round((end - start) / 1000));
+  if (secs < 60) return `${secs}s`;
+  const m = Math.floor(secs / 60);
+  return m < 60 ? `${m}m` : `${Math.floor(m / 60)}h ${m % 60}m`;
+}
+
+function label(run) {
+  if (run.status === "queued") return "queued";
+  if (run.status !== "completed") return "running";
+  return run.conclusion || "done";
+}
+
+function statusLine(run) {
+  if (run.status === "queued") return "Waiting for a GitHub runner to pick it up.";
+  if (run.status !== "completed") return "Running on GitHub. You can close this page — it keeps going.";
+  if (run.conclusion === "cancelled") return "Cancelled. Start it again to resume from where it stopped.";
+  if (run.conclusion !== "success") return "The run did not finish. Open it on GitHub for the log, then start it again to resume.";
+  return "";
+}
+
+function outcome(run) {
+  const s = run.summary;
+  if (!s) return "";
+  const total = s.total || 0;
+  const share = total ? ((s.passed / total) * 100).toFixed(1) : "0.0";
+  return `<div class="outcome">
+      <div class="stat pass"><span class="n">${fmt(s.passed)}</span><span class="k">Passed · ${share}%</span></div>
+      <div class="stat"><span class="n">${fmt(s.filtered)}</span><span class="k">Filtered out</span></div>
+      ${s.errors ? `<div class="stat warn"><span class="n">${fmt(s.errors)}</span><span class="k">Unresolved</span></div>` : ""}
+    </div>`;
+}
+
+function render(data) {
+  $("repo").textContent = data.repo || "";
+  const active = data.runs.filter((r) => r.status !== "completed").length;
+  $("runcount").textContent = data.runs.length
+    ? `${data.runs.length} recent${active ? ` · ${active} active` : ""}` : "";
+
+  if (!data.runs.length) {
+    $("runs").innerHTML = `<div class="card empty">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"
+             stroke-linecap="round" stroke-linejoin="round"><path d="M3 5h18l-7 8v6l-4 2v-8z"/></svg>
+        <div>No runs yet. Upload a wallet list above.</div>
+      </div>`;
+    return;
+  }
+
+  $("runs").innerHTML = data.runs.map((run) => {
+    const running = run.status !== "completed";
+    const done = run.status === "completed" && run.conclusion === "success";
+    const line = statusLine(run);
+    const s = run.summary;
+    return `<article class="card run">
+      <div class="run-top">
+        <span class="run-name">${esc(run.name)}</span>
+        <span class="badge ${label(run)}">${label(run)}</span>
+      </div>
+      <div class="spec">
+        <span>#${run.number}</span><span>${elapsed(run)}</span>${s ? `<span>${fmt(s.total)} wallets</span>` : ""}
+      </div>
+      ${running ? `<div class="track"><div class="fill"></div></div>` : ""}
+      ${line ? `<div class="status">${esc(line)}</div>` : ""}
+      ${outcome(run)}
+      ${s && s.errors ? `<div class="note">${fmt(s.errors)} wallets unresolved — start the same list again to retry only those.</div>` : ""}
+      <div class="actions">
+        ${done ? `<a class="dl" href="/api/runs/${run.id}/download">↓ results.zip</a>` : ""}
+        <a class="dl plain" href="${esc(run.html_url)}" target="_blank" rel="noopener">Log on GitHub</a>
+        <span class="spacer"></span>
+        ${running ? `<button class="ghost" onclick="cancelRun(${run.id})">Cancel</button>` : ""}
+      </div>
+    </article>`;
+  }).join("");
+}
+
+async function refresh() {
+  try {
+    const res = await fetch("/api/runs");
+    if (res.status === 401) return showGate();
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      $("banner").hidden = false;
+      $("banner").textContent = body.detail || `Could not reach GitHub (${res.status}).`;
+      return;
+    }
+    $("banner").hidden = true;
+    render(await res.json());
+  } catch { /* transient */ }
+}
+
+function showGate() {
+  clearInterval(timer);
+  timer = null;
+  $("app").hidden = true;
+  $("gate").hidden = false;
+  $("password").focus();
+}
+
+function showApp() {
+  $("gate").hidden = true;
+  $("app").hidden = false;
+  refresh();
+  if (!timer) timer = setInterval(refresh, 5000);
+}
+
+async function cancelRun(id) {
+  if (!confirm("Cancel this run? Progress is cached, so starting the same list again resumes it.")) return;
+  await fetch(`/api/runs/${id}/cancel`, { method: "POST" });
+  refresh();
+}
+
+$("loginForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const body = new FormData();
+  body.append("password", $("password").value);
+  const res = await fetch("/api/login", { method: "POST", body });
+  if (res.ok) {
+    $("loginError").hidden = true;
+    $("password").value = "";
+    showApp();
+  } else {
+    const detail = await res.json().catch(() => ({}));
+    $("loginError").hidden = false;
+    $("loginError").textContent = detail.detail || "That password did not match.";
+  }
+});
+
+$("signout").addEventListener("click", async () => {
+  await fetch("/api/logout", { method: "POST" });
+  showGate();
+});
+
+$("form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const button = $("submit");
+  button.disabled = true;
+  button.textContent = "Starting…";
+  try {
+    const res = await fetch("/api/runs", { method: "POST", body: new FormData(event.target) });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      alert(body.detail || "Could not start the run");
+    } else {
+      $("file").value = "";
+      // The workflow takes a moment to appear in the runs list.
+      setTimeout(refresh, 2500);
+    }
+  } finally {
+    button.disabled = false;
+    button.textContent = "Start run";
+    refresh();
+  }
+});
+
+// Decide which view to show by asking the API whether we are signed in.
+fetch("/api/runs").then((res) => (res.status === 401 ? showGate() : showApp())).catch(showGate);
+</script>
+</body>
+</html>

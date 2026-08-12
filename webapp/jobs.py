@@ -188,11 +188,20 @@ class Runner:
     def current(self) -> str | None:
         return self._current
 
-    def _should_stop(self, job_id: str) -> bool:
+    def _stop_reason(self, job_id: str) -> str | None:
+        """Why this job should stop, if it should.
+
+        A shutdown and a user cancellation both stop the work, but they mean
+        opposite things afterwards: a redeploy must leave the job queued so it
+        resumes, while a cancellation is a decision to be remembered.
+        """
         if self._shutdown.is_set():
-            return True  # a shutdown stops the current job at the next boundary
+            return "shutdown"
         with self._lock:
-            return job_id in self._cancelled
+            return "cancelled" if job_id in self._cancelled else None
+
+    def _should_stop(self, job_id: str) -> bool:
+        return self._stop_reason(job_id) is not None
 
     # ---------------------------------------------------------------- worker
 
@@ -219,7 +228,10 @@ class Runner:
         job = self.store.get(job_id)
         if not job or job.status == CANCELLED:
             return
-        if self._should_stop(job_id):
+        reason = self._stop_reason(job_id)
+        if reason == "shutdown":
+            return  # left queued, so the next boot picks it up untouched
+        if reason:
             job.status = CANCELLED
             job.finished_at = time.time()
             self.store.save(job)
@@ -316,7 +328,7 @@ class Runner:
                 )
                 results = [r for r in results if not r.error] + retried
         except fw.Cancelled:
-            if self._shutdown.is_set():
+            if self._stop_reason(job_id) == "shutdown":
                 job.status = QUEUED
                 job.message = "paused by a restart -- it will continue automatically"
             else:

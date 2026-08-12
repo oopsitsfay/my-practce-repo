@@ -1,0 +1,201 @@
+/* Wallet filter — warm cream ground, deep moss green, fine paper grain.
+   One file, shared by both pages, so the look stays consistent as features grow. */
+
+:root {
+  color-scheme: light dark;
+
+  /* cream paper */
+  --paper:      #f4efe3;
+  --paper-2:    #efe8d9;
+  --card:       #fbf8f1;
+  --line:       #e0d7c4;
+  --line-soft:  #eae2d2;
+
+  /* moss green */
+  --green:      #2f5c43;
+  --green-deep: #234233;
+  --green-soft: #86a68e;
+  --green-wash: #e6ede4;
+
+  /* ink */
+  --ink:        #23291f;
+  --ink-soft:   #5f6b5a;
+  --ink-faint:  #8b9385;
+
+  --amber:      #9a6b1f;
+  --rust:       #9c3b2c;
+
+  --radius:     14px;
+  --radius-sm:  9px;
+  --shadow:     0 1px 2px rgba(35, 41, 31, .04), 0 8px 24px -12px rgba(35, 41, 31, .12);
+
+  --serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+  --sans:  ui-sans-serif, system-ui, -apple-system, "Segoe UI", Inter, sans-serif;
+  --mono:  ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paper:      #14180f;
+    --paper-2:    #10140c;
+    --card:       #1c2116;
+    --line:       #2f3628;
+    --line-soft:  #262c20;
+
+    --green:      #8fc0a0;
+    --green-deep: #a9d3b6;
+    --green-soft: #4d6a55;
+    --green-wash: #1f2a20;
+
+    --ink:        #e8e5d8;
+    --ink-soft:   #a9b0a0;
+    --ink-faint:  #7c8577;
+
+    --amber:      #d9a441;
+    --rust:       #e08672;
+
+    --shadow:     0 1px 2px rgba(0, 0, 0, .3), 0 10px 30px -14px rgba(0, 0, 0, .6);
+  }
+}
+
+* { box-sizing: border-box; }
+
+html { -webkit-text-size-adjust: 100%; }
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: var(--paper);
+  color: var(--ink);
+  font: 15px/1.6 var(--sans);
+  letter-spacing: -0.005em;
+  position: relative;
+}
+
+/* Paper grain. Inline SVG turbulence — no external asset, no request, and it
+   scales with the viewport instead of tiling visibly. */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  opacity: .5;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='240' height='240'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.82' numOctaves='4' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.42'/%3E%3C/svg%3E");
+  mix-blend-mode: multiply;
+}
+
+@media (prefers-color-scheme: dark) {
+  body::before { mix-blend-mode: screen; opacity: .22; }
+}
+
+/* A soft wash so the cream is not flat */
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(60rem 40rem at 15% -10%, var(--green-wash), transparent 60%),
+    radial-gradient(50rem 36rem at 110% 10%, var(--green-wash), transparent 55%);
+  opacity: .7;
+}
+
+.wrap { position: relative; z-index: 1; }
+
+/* ---------------------------------------------------------------- type */
+
+h1, h2, h3 { font-family: var(--serif); font-weight: 600; letter-spacing: -0.015em; margin: 0; }
+h1 { font-size: 27px; }
+h2 { font-size: 18px; }
+
+.eyebrow {
+  font: 600 11px/1 var(--sans);
+  letter-spacing: .13em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+code { font: 12.5px var(--mono); background: var(--green-wash); padding: 1px 5px; border-radius: 5px; }
+
+a { color: var(--green); }
+
+/* ---------------------------------------------------------------- surfaces */
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+
+/* ---------------------------------------------------------------- controls */
+
+label {
+  display: block;
+  font: 600 11px/1 var(--sans);
+  letter-spacing: .09em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  margin-bottom: 7px;
+}
+
+input, select {
+  width: 100%;
+  padding: 10px 12px;
+  font: 15px var(--sans);
+  color: var(--ink);
+  background: var(--paper-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  transition: border-color .15s, box-shadow .15s;
+}
+
+input:focus, select:focus {
+  outline: none;
+  border-color: var(--green-soft);
+  box-shadow: 0 0 0 3px var(--green-wash);
+}
+
+input[type=file] { padding: 9px 10px; cursor: pointer; }
+input[type=file]::file-selector-button {
+  font: 600 13px var(--sans);
+  color: var(--ink);
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 6px 12px;
+  margin-right: 11px;
+  cursor: pointer;
+}
+
+button {
+  font: 600 14px var(--sans);
+  padding: 11px 20px;
+  color: var(--paper);
+  background: var(--green);
+  border: 1px solid var(--green);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background .15s, transform .05s, opacity .15s;
+}
+button:hover { background: var(--green-deep); border-color: var(--green-deep); }
+button:active { transform: translateY(1px); }
+button:disabled { opacity: .45; cursor: not-allowed; }
+
+@media (prefers-color-scheme: dark) {
+  button { color: #10140c; }
+}
+
+button.ghost {
+  font-weight: 500;
+  color: var(--ink-soft);
+  background: transparent;
+  border-color: var(--line);
+  padding: 7px 14px;
+  font-size: 13px;
+}
+button.ghost:hover { background: var(--green-wash); border-color: var(--green-soft); color: var(--ink); }
+
+.hint { font-size: 13px; color: var(--ink-faint); margin-top: 7px; line-height: 1.5; }

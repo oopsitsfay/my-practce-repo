@@ -1,5 +1,8 @@
 name: Filter wallets
 
+# Shown in the Actions list and read by the Vercel panel.
+run-name: ${{ inputs.wallets_file }} — min ${{ inputs.min_tx }} tx, ${{ inputs.mode }}
+
 # Run the wallet filter on GitHub's runners instead of a host you pay for.
 # Trigger it from the Actions tab, come back when it is done, download the CSVs.
 #
@@ -34,6 +37,9 @@ concurrency:
   # The Alchemy budget is per key, so two runs would only throttle each other.
   group: wallet-filter
   cancel-in-progress: false
+
+permissions:
+  contents: write  # to publish each run's summary back to the repo
 
 jobs:
   filter:
@@ -86,6 +92,32 @@ jobs:
       - name: Write the summary
         if: always()
         run: python .github/scripts/summarize.py out/summary.json >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish the summary for the panel
+        # Artifacts can only be fetched as a zip, which is a lot of work for six
+        # numbers. Committing the summary lets any front end read the outcome
+        # with a single API call, and leaves a browsable history in the repo.
+        if: always()
+        run: |
+          [ -f out/summary.json ] || exit 0
+          mkdir -p results
+          python - "$GITHUB_RUN_ID" <<'PY' > "results/${GITHUB_RUN_ID}.json"
+          import json, os, sys
+          s = json.load(open("out/summary.json"))
+          s["run_id"] = int(sys.argv[1])
+          s["wallets_file"] = os.environ["WALLETS_FILE"]
+          s["mode"] = os.environ["MODE"]
+          print(json.dumps(s, indent=2))
+          PY
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "results/${GITHUB_RUN_ID}.json"
+          git commit -m "Results for run ${GITHUB_RUN_ID}" || exit 0
+          git pull --rebase --autostash origin "${GITHUB_REF_NAME}"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
+        env:
+          WALLETS_FILE: ${{ inputs.wallets_file }}
+          MODE: ${{ inputs.mode }}
 
       - name: Upload results
         if: always()
