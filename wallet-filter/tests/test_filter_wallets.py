@@ -535,6 +535,36 @@ def test_capped_counts_render_with_a_prefix(tmp_path):
     assert list(csv.DictReader((tmp_path / "passed.csv").open()))[0]["tx_count"] == ">=4"
 
 
+def test_locked_output_reports_which_file(tmp_path, monkeypatch):
+    # Windows: Excel holding passed.csv open makes it unwritable. The run is
+    # finished and checkpointed by then, so this must be a clear message.
+    real_open = Path.open
+
+    def deny_passed(self, *args, **kwargs):
+        if self.name == "passed.csv" and "w" in (args[0] if args else kwargs.get("mode", "r")):
+            raise PermissionError(13, "Permission denied")
+        return real_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", deny_passed)
+    with pytest.raises(fw.OutputLocked) as caught:
+        fw.write_outputs(tmp_path, [fw.Result(addr(1), 9)], threshold=4)
+    assert caught.value.path.name == "passed.csv"
+
+
+def test_locked_output_exits_cleanly_instead_of_a_traceback(tmp_path, monkeypatch, capsys):
+    source = tmp_path / "wallets.csv"
+    source.write_text(f"{addr(1)}\n")
+    out = tmp_path / "out"
+    session = FakeSession(nonces={addr(1): 9})
+    monkeypatch.setattr(fw.requests, "Session", lambda: session)
+    monkeypatch.setattr(fw, "write_outputs", lambda *a, **k: (_ for _ in ()).throw(fw.OutputLocked(out / "passed.csv")))
+
+    args = [str(source), "--url", "http://fake", "--cu-per-second", "0", "--out", str(out)]
+    assert fw.main(args) == 1
+    err = capsys.readouterr().err
+    assert "passed.csv" in err and "Excel" in err and "checkpoint" in err
+
+
 def test_no_errors_file_when_clean(tmp_path):
     fw.write_outputs(tmp_path, [fw.Result(addr(1), 9)], threshold=4)
     assert not (tmp_path / "errors.csv").exists()

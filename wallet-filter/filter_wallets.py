@@ -705,6 +705,19 @@ def run(
     return results
 
 
+class OutputLocked(RuntimeError):
+    """An output file could not be written because something else holds it open.
+
+    On Windows an open Excel window locks the file outright. The run itself is
+    finished and checkpointed at this point, so this must read as "close the
+    file and re-run", not as a lost run.
+    """
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        super().__init__(str(path))
+
+
 def write_outputs(out_dir: Path, results: Sequence[Result], threshold: int) -> dict[str, int]:
     out_dir.mkdir(parents=True, exist_ok=True)
     ordered = sorted(results, key=lambda r: (r.error is not None, -r.count, r.address))
@@ -713,32 +726,28 @@ def write_outputs(out_dir: Path, results: Sequence[Result], threshold: int) -> d
     filtered = [r for r in ordered if r.error is None and r.count < threshold]
     errored = [r for r in ordered if r.error is not None]
 
-    with (out_dir / "passed.csv").open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.writer(handle)
-        writer.writerow(["address", "tx_count"])
-        for r in passed:
-            writer.writerow([r.address, f">={r.count}" if r.capped else r.count])
+    def write_csv(name: str, header: list[str], rows: Iterable[list]) -> None:
+        path = out_dir / name
+        try:
+            with path.open("w", newline="", encoding="utf-8") as handle:
+                writer = csv.writer(handle)
+                writer.writerow(header)
+                writer.writerows(rows)
+        except PermissionError as exc:
+            raise OutputLocked(path) from exc
 
-    with (out_dir / "filtered.csv").open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.writer(handle)
-        writer.writerow(["address", "tx_count"])
-        for r in filtered:
-            writer.writerow([r.address, r.count])
+    def count_cell(r: Result) -> str | int:
+        return f">={r.count}" if r.capped else r.count
 
-    with (out_dir / "results.csv").open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.writer(handle)
-        writer.writerow(["address", "tx_count", "passed"])
-        for r in ordered:
-            if r.error is not None:
-                continue
-            writer.writerow([r.address, f">={r.count}" if r.capped else r.count, r.count >= threshold])
-
+    write_csv("passed.csv", ["address", "tx_count"], ([r.address, count_cell(r)] for r in passed))
+    write_csv("filtered.csv", ["address", "tx_count"], ([r.address, r.count] for r in filtered))
+    write_csv(
+        "results.csv",
+        ["address", "tx_count", "passed"],
+        ([r.address, count_cell(r), r.count >= threshold] for r in ordered if r.error is None),
+    )
     if errored:
-        with (out_dir / "errors.csv").open("w", newline="", encoding="utf-8") as handle:
-            writer = csv.writer(handle)
-            writer.writerow(["address", "error"])
-            for r in errored:
-                writer.writerow([r.address, r.error])
+        write_csv("errors.csv", ["address", "error"], ([r.address, r.error] for r in errored))
 
     return {"passed": len(passed), "filtered": len(filtered), "errors": len(errored)}
 
@@ -930,7 +939,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     sys.stderr.write("\n")
 
     results = list(finished.values()) + fresh
-    counts = write_outputs(args.out, results, args.min_tx)
+    try:
+        counts = write_outputs(args.out, results, args.min_tx)
+    except OutputLocked as locked:
+        print(f"\ncannot write {locked.path}: another program has it open.", file=sys.stderr)
+        print("On Windows that is usually Excel. Close the file and re-run -- every wallet is", file=sys.stderr)
+        print("already answered in the checkpoint, so it will finish instantly without querying", file=sys.stderr)
+        print(f"anything. Or write elsewhere with --out {args.out}2", file=sys.stderr)
+        return 1
 
     total = counts["passed"] + counts["filtered"]
     share = counts["passed"] / total * 100 if total else 0.0
