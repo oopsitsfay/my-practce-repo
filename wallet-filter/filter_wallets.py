@@ -43,7 +43,7 @@ import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable, Iterable, Iterator, Sequence
 
@@ -59,6 +59,19 @@ TRANSFER_CATEGORIES = ("external", "internal", "erc20", "erc721", "erc1155", "sp
 
 # alchemy_getAssetTransfers refuses maxCount above 1000.
 MAX_TRANSFER_PAGE = 1000
+
+# Batching is billed per wallet, so a batch of N nonces costs N * CU_NONCE in a
+# single request. Exceed the plan's per-second budget with one request and it is
+# rejected outright -- retries cannot help, because it never fits. So the batch
+# is sized to the budget rather than picked by hand.
+MAX_BATCH = 100
+
+
+def safe_batch_size(cu_per_second: float) -> int:
+    """Largest batch whose compute-unit cost still fits one second of budget."""
+    if cu_per_second <= 0:
+        return MAX_BATCH
+    return max(1, min(MAX_BATCH, int(cu_per_second // CU_NONCE)))
 
 
 class RpcError(RuntimeError):
@@ -151,19 +164,83 @@ class Result:
     partial: bool = False  # "both" mode: outbound is known, inbound still to come
 
 
+class CuLimiter:
+    """Token bucket over Alchemy compute units.
+
+    Alchemy bills per compute unit and throttles on CU/second, so the honest way
+    to stay inside the budget is to pace requests against it rather than fire at
+    will and treat 429s as the brake. A sustained 429 storm is far more expensive
+    than waiting: throughput collapses and wallets start failing outright.
+
+    The rate halves on every 429 and drifts back up on success, so an unknown or
+    lower plan tier converges to whatever the endpoint actually allows.
+    """
+
+    # Depart a little under the stated budget. Running exactly at the ceiling
+    # leaves no room for clock skew or the endpoint's own accounting.
+    HEADROOM = 0.9
+
+    def __init__(self, cu_per_second: float) -> None:
+        self.configured = float(cu_per_second)
+        self.rate = self.configured
+        self.floor = max(self.configured * 0.05, 10.0)
+        self.next_free = time.monotonic()
+        self._lock = threading.Lock()
+
+    @property
+    def enabled(self) -> bool:
+        return self.configured > 0
+
+    def acquire(self, cost: float) -> None:
+        """Block until this request's turn to depart.
+
+        Requests are scheduled onto a timeline rather than drawn from a bucket.
+        A bucket lets every worker fire at once the moment it has tokens, which
+        is exactly the burst the endpoint rejects; spacing departures by
+        cost/rate means instantaneous demand never exceeds the budget, however
+        many workers there are.
+        """
+        if not self.enabled:
+            return
+        with self._lock:
+            now = time.monotonic()
+            start = max(now, self.next_free)
+            self.next_free = start + cost / (self.rate * self.HEADROOM)
+        wait = start - time.monotonic()
+        if wait > 0:
+            time.sleep(wait)
+
+    def penalize(self) -> None:
+        """Back off after a 429."""
+        if not self.enabled:
+            return
+        with self._lock:
+            self.rate = max(self.rate / 2, self.floor)
+
+    def recover(self) -> None:
+        """Drift back toward the configured rate after a success."""
+        if not self.enabled:
+            return
+        with self._lock:
+            if self.rate < self.configured:
+                self.rate = min(self.configured, self.rate * 1.05)
+
+
 class AlchemyClient:
-    """Thin JSON-RPC client with per-thread sessions, retries and 429 handling."""
+    """Thin JSON-RPC client with per-thread sessions, CU pacing and retries."""
 
     def __init__(
         self,
         url: str,
         timeout: float = 30.0,
-        max_retries: int = 6,
+        max_retries: int = 8,
+        cu_per_second: float = 0.0,
         session_factory: Callable[[], requests.Session] | None = None,
     ) -> None:
         self.url = url
         self.timeout = timeout
         self.max_retries = max_retries
+        self.limiter = CuLimiter(cu_per_second)
         self._session_factory = session_factory or requests.Session
         self._local = threading.local()
         self._throttle_until = 0.0
@@ -191,11 +268,15 @@ class AlchemyClient:
             self.rate_limit_hits += 1
             self._throttle_until = max(self._throttle_until, time.monotonic() + seconds)
 
-    def call(self, payload: list[dict] | dict) -> list[dict] | dict:
-        """POST a single request or a batch, retrying transient failures."""
+    def call(self, payload: list[dict] | dict, cost: float = 0.0) -> list[dict] | dict:
+        """POST a single request or a batch, retrying transient failures.
+
+        `cost` is the request's compute-unit price, used to pace against the plan.
+        """
         last_error: Exception | None = None
 
         for attempt in range(self.max_retries):
+            self.limiter.acquire(cost)
             self._wait_for_throttle()
             try:
                 response = self.session.post(self.url, json=payload, timeout=self.timeout)
@@ -207,6 +288,7 @@ class AlchemyClient:
             if response.status_code == 429:
                 retry_after = response.headers.get("Retry-After")
                 delay = float(retry_after) if retry_after and retry_after.isdigit() else min(2**attempt, 30)
+                self.limiter.penalize()  # pace slower from here on, not just this once
                 self._throttle(delay)
                 last_error = RuntimeError("429 rate limited")
                 continue
@@ -223,11 +305,14 @@ class AlchemyClient:
                 raise RpcError(f"HTTP {response.status_code}: {response.text[:200]}")
 
             try:
-                return response.json()
+                parsed = response.json()
             except ValueError as exc:
                 last_error = exc
                 time.sleep(min(2**attempt, 30))
                 continue
+
+            self.limiter.recover()
+            return parsed
 
         raise RpcError(f"giving up after {self.max_retries} attempts: {last_error}")
 
@@ -245,7 +330,7 @@ def count_nonces(client: AlchemyClient, addresses: Sequence[str], block: str = "
     ]
 
     try:
-        raw = client.call(payload)
+        raw = client.call(payload, cost=len(addresses) * CU_NONCE)
     except FatalRpcError:
         raise
     except RpcError as exc:
@@ -291,7 +376,10 @@ def _transfer_page(
     if page_key:
         params["pageKey"] = page_key
 
-    raw = client.call({"jsonrpc": "2.0", "id": 1, "method": "alchemy_getAssetTransfers", "params": [params]})
+    raw = client.call(
+        {"jsonrpc": "2.0", "id": 1, "method": "alchemy_getAssetTransfers", "params": [params]},
+        cost=CU_TRANSFERS,
+    )
     if isinstance(raw, list):
         raw = raw[0]
     if raw.get("error"):
@@ -654,8 +742,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--url", default=os.environ.get("ALCHEMY_URL"), help="RPC URL (or set ALCHEMY_URL)")
     parser.add_argument("--out", type=Path, default=Path("out"), help="output directory (default: ./out)")
     parser.add_argument("--column", help="CSV column holding the address (default: auto-detect)")
-    parser.add_argument("--batch-size", type=int, default=100, help="addresses per JSON-RPC batch (nonce mode)")
-    parser.add_argument("--workers", type=int, default=5, help="concurrent requests (default: 5)")
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=None,
+        help="addresses per JSON-RPC batch (default: derived from --cu-per-second)",
+    )
+    parser.add_argument("--workers", type=int, default=3, help="concurrent requests (default: 3)")
     parser.add_argument(
         "--categories",
         default="external",
@@ -666,8 +759,14 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="count every transfer instead of stopping at the threshold (much slower)",
     )
-    parser.add_argument("--cu-per-second", type=int, default=330, help="your Alchemy CU/s, for the time estimate")
+    parser.add_argument(
+        "--cu-per-second",
+        type=int,
+        default=330,
+        help="your plan's compute units per second -- requests are paced to it (default: 330, the free tier; 0 = no pacing)",
+    )
     parser.add_argument("--no-resume", action="store_true", help="ignore any existing checkpoint and start over")
+    parser.add_argument("--no-retry", action="store_true", help="skip the automatic retry pass over failed wallets")
     parser.add_argument("--dry-run", action="store_true", help="parse the input and print an estimate, no network")
     return parser
 
@@ -698,7 +797,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         cost = f"~{cu_low:,} CU, ~{sec_low / 60:.1f} min"
     else:
         cost = f"{cu_low:,}-{cu_high:,} CU, {sec_low / 60:.0f}-{sec_high / 60:.0f} min"
-    print(f"mode={args.mode} min-tx={args.min_tx}  {cost} at {args.cu_per_second} CU/s")
+    batching = args.batch_size if args.batch_size else safe_batch_size(args.cu_per_second)
+    print(f"mode={args.mode} min-tx={args.min_tx}  {cost} at {args.cu_per_second} CU/s, batches of {batching}")
 
     if args.dry_run:
         return 0
@@ -715,11 +815,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         checkpoint_path.unlink(missing_ok=True)
         meta_path.unlink(missing_ok=True)
 
+    batch_size = args.batch_size if args.batch_size else safe_batch_size(args.cu_per_second)
+    if args.batch_size and args.cu_per_second and args.batch_size * CU_NONCE > args.cu_per_second:
+        print(
+            f"warning: a batch of {args.batch_size} costs {args.batch_size * CU_NONCE:,} CU, over the "
+            f"{args.cu_per_second:,} CU/s budget -- those requests will be rejected, not merely slowed",
+            file=sys.stderr,
+        )
+
     cfg = Config(
         mode=args.mode,
         threshold=args.min_tx,
         categories=categories,
-        batch_size=args.batch_size,
+        batch_size=batch_size,
         workers=args.workers,
         exact=args.exact_counts,
     )
@@ -743,7 +851,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if cached:
         detail = f", {len(partials)} needing only the inbound stage" if partials else ""
         print(f"resuming: {len(cached)} already done{detail}, {len(pending)} to go")
-    client = AlchemyClient(args.url)
+    client = AlchemyClient(args.url, cu_per_second=args.cu_per_second)
     writer = CheckpointWriter(checkpoint_path)
     started = time.monotonic()
 
@@ -758,6 +866,15 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     try:
         fresh = run(client, pending, cfg, writer, progress, resume_partials=partials)
+
+        # A rate-limit storm can leave a lot of wallets unresolved. Retry them
+        # single-threaded before reporting, since a run that answers two thirds
+        # of the list is not an answer at all.
+        failed = [r.address for r in fresh if r.error]
+        if failed and not args.no_retry:
+            sys.stderr.write(f"\n  retrying {len(failed):,} wallets that failed, more slowly\n")
+            retried = run(client, failed, replace(cfg, workers=1), writer, progress)
+            fresh = [r for r in fresh if not r.error] + retried
     except RpcError as exc:
         sys.stderr.write("\n")
         print(f"fatal: {exc}", file=sys.stderr)
@@ -779,7 +896,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(f"\npassed   (>= {args.min_tx} tx): {counts['passed']:,}  ({share:.1f}%)")
     print(f"filtered (<  {args.min_tx} tx): {counts['filtered']:,}")
     if counts["errors"]:
-        print(f"errors:                {counts['errors']:,}  -- see {args.out / 'errors.csv'}, re-run to retry")
+        print(f"errors:                {counts['errors']:,}  -- see {args.out / 'errors.csv'}")
+        print(f"\nWARNING: {counts['errors']:,} of {len(addresses):,} wallets could not be resolved.")
+        print("The split above only covers the rest, so do not use it yet -- re-run to retry just those.")
+        if client.rate_limit_hits:
+            print(f"Hit {client.rate_limit_hits:,} rate limits; try --cu-per-second {max(args.cu_per_second // 2, 25)}")
     print(f"\nwrote {args.out}/passed.csv, filtered.csv, results.csv")
     return 0
 

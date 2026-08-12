@@ -42,7 +42,8 @@ that the expensive half is only paid for where it is actually needed.
 
 **Stage one — outbound.** The account nonce (`eth_getTransactionCount`) is
 already the exact number of transactions a wallet has *sent*. It costs 26 CU and
-batches 100 addresses per request, so the entire list is priced in ~10 minutes.
+batches many addresses into one request, so the entire list is priced at ~205k CU
+-- about 10 minutes of free-tier budget.
 Every wallet that clears the threshold on outbound activity alone is finished
 here and never costs a transfer lookup.
 
@@ -95,12 +96,13 @@ than a precise number — the exact total was never worth paying for. Pass
 --url URL           RPC endpoint, or set ALCHEMY_URL
 --out DIR           output directory (default: ./out)
 --column NAME       CSV column holding the address (default: auto-detect)
---batch-size N      addresses per JSON-RPC batch, outbound stage (default: 100)
---workers N         concurrent requests (default: 5)
+--batch-size N      addresses per JSON-RPC batch (default: sized to the budget)
+--workers N         concurrent requests (default: 3)
 --categories LIST   transfer categories counted inbound (default: external)
 --exact-counts      count everything, do not stop at the threshold
---cu-per-second N   your plan's throughput, for the time estimate (default: 330)
+--cu-per-second N   your plan's CU/s -- requests are paced to it (default: 330)
 --no-resume         ignore an existing checkpoint and start over
+--no-retry          skip the automatic retry pass over failed wallets
 --dry-run           parse the input and print an estimate without any network calls
 ```
 
@@ -109,7 +111,7 @@ Start with `--dry-run` to confirm the file parses and see the cost estimate:
 ```
 $ python3 filter_wallets.py wallets.csv --dry-run
 loaded 7871 unique addresses from wallets.csv
-mode=both min-tx=4  204,646-1,385,296 CU, 10-70 min at 330 CU/s
+mode=both min-tx=4  204,646-1,385,296 CU, 10-70 min at 330 CU/s, batches of 12
 ```
 
 The range is real: the low end is every wallet passing on outbound activity
@@ -122,6 +124,37 @@ Either a bare newline-delimited list of addresses or a CSV with a header. The
 address column is auto-detected; use `--column` to name it explicitly. Addresses
 are lowercased and de-duplicated, and rows that are not valid 20-byte hex
 addresses are skipped and reported rather than silently dropped.
+
+## Rate limits and your plan tier
+
+Alchemy bills per compute unit and throttles on CU **per second** — 330/s on the
+free tier. Two things follow, and getting either wrong makes the run fail rather
+than merely run slowly:
+
+**A single request cannot cost more than one second of budget.** Batching is
+billed per wallet, so a batch of 100 nonces is one request costing 2,600 CU. On
+a 330 CU/s plan that request is rejected outright, every time, forever — retries
+cannot help, because it never fits. The batch size is therefore derived from
+`--cu-per-second` (12 wallets on the free tier) rather than being a fixed
+default. Override it with `--batch-size` only if you know your ceiling; an
+oversized value is flagged.
+
+**Concurrent requests must be spaced, not just budgeted.** Requests are
+scheduled onto a timeline, spaced by `cost / rate`, so instantaneous demand
+never exceeds the plan however many workers are running. The rate halves on any
+429 and drifts back up on success, so an unknown or lower tier converges to
+whatever the endpoint actually allows.
+
+If you are on a paid tier, tell it so and the whole thing speeds up
+proportionally:
+
+```bash
+python3 filter_wallets.py wallets.csv --cu-per-second 660    # growth
+```
+
+On the free tier expect roughly 10-15 minutes for the outbound stage and 30-45
+for inbound, so ~45-60 minutes overall for 7,871 wallets. That is the plan's
+budget, not overhead — 204,646 CU at 330 CU/s is 10 minutes of pure throughput.
 
 ## Reliability
 
@@ -156,10 +189,11 @@ survive interruptions:
 pip install pytest && python3 -m pytest tests/ -q
 ```
 
-46 tests covering CSV parsing, batch counting, out-of-order and partial batch
+57 tests covering CSV parsing, batch counting, out-of-order and partial batch
 responses, two-stage in+out counting and its skip-the-inbound-lookup shortcut,
 early-exit transfer counting, 429/5xx retry behaviour, checkpoint round-trips,
-resume-mismatch guards, and full end-to-end runs that resume mid-stage — all
+resume-mismatch guards, compute-unit pacing and batch sizing, and full
+end-to-end runs that resume mid-stage — all
 against a fake RPC, so no network or API credits are needed.
 
 ## Note on credentials

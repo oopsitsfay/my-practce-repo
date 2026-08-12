@@ -5,6 +5,8 @@ from __future__ import annotations
 import csv
 import json
 import sys
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -318,6 +320,122 @@ def test_both_resumes_partials_without_refetching_nonces():
     assert all(isinstance(c, dict) for c in session.calls)  # transfer calls only, no batch
 
 
+# ---------------------------------------------------------------- CU pacing
+
+
+def test_limiter_paces_to_the_budget(monkeypatch):
+    slept = []
+    monkeypatch.setattr(fw.time, "sleep", lambda s: slept.append(s))
+    limiter = fw.CuLimiter(100)
+
+    limiter.acquire(100)  # first request departs immediately
+    assert slept == []
+    limiter.acquire(100)  # the next waits roughly a second's worth of budget
+    assert slept and 1.0 <= slept[-1] <= 1.2  # 1/HEADROOM
+
+
+def test_limiter_spaces_concurrent_workers_instead_of_bursting():
+    # The failure this guards against: several workers each firing a
+    # near-budget request at the same instant, which the endpoint rejects.
+    limiter = fw.CuLimiter(330)
+    start = time.monotonic()
+    results = []
+
+    def worker():
+        limiter.acquire(312)  # a 12-wallet nonce batch
+        results.append(time.monotonic() - start)
+
+    threads = [threading.Thread(target=worker) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    departures = sorted(results)
+    gaps = [b - a for a, b in zip(departures, departures[1:])]
+    assert all(gap > 0.5 for gap in gaps), f"requests bunched up: {gaps}"
+
+
+def test_limiter_disabled_at_zero(monkeypatch):
+    monkeypatch.setattr(fw.time, "sleep", lambda s: pytest.fail("should not sleep"))
+    limiter = fw.CuLimiter(0)
+    assert not limiter.enabled
+    for _ in range(100):
+        limiter.acquire(10_000)
+
+
+def test_limiter_halves_on_429_and_drifts_back_up():
+    limiter = fw.CuLimiter(320)
+    limiter.penalize()
+    limiter.penalize()
+    assert limiter.rate == 80  # 320 -> 160 -> 80
+
+    for _ in range(200):
+        limiter.recover()
+    assert limiter.rate == 320  # never overshoots the configured rate
+
+
+def test_limiter_penalty_has_a_floor():
+    limiter = fw.CuLimiter(330)
+    for _ in range(50):
+        limiter.penalize()
+    assert limiter.rate == limiter.floor > 0  # throttled, never stalled
+
+
+def test_client_prices_requests_by_compute_unit(monkeypatch):
+    monkeypatch.setattr(fw.time, "sleep", lambda _s: None)
+    session = FakeSession(nonces={addr(i): 1 for i in range(1, 6)})
+    client = fw.AlchemyClient("http://fake", cu_per_second=1000, session_factory=lambda: session)
+
+    costs = []
+    real_acquire = client.limiter.acquire
+    client.limiter.acquire = lambda cost: (costs.append(cost), real_acquire(cost))[1]
+
+    fw.count_nonces(client, [addr(i) for i in range(1, 6)])
+    assert costs == [5 * fw.CU_NONCE]  # batch priced by how many wallets it carries
+
+    costs.clear()
+    fw.count_transfers(client, addr(1), threshold=4, categories=["external"], directions=("toAddress",))
+    assert costs == [fw.CU_TRANSFERS]
+
+
+def test_a_429_slows_the_client_down_for_later_calls(monkeypatch):
+    monkeypatch.setattr(fw.time, "sleep", lambda _s: None)
+    session = FakeSession(
+        script=[
+            FakeResponse(None, status_code=429, headers={"Retry-After": "0"}),
+            FakeResponse([{"id": 0, "result": "0x5"}]),
+        ]
+    )
+    client = fw.AlchemyClient("http://fake", cu_per_second=330, session_factory=lambda: session)
+    before = client.limiter.rate
+    fw.count_nonces(client, [addr(1)])
+    assert client.limiter.rate < before  # paced slower from here on, not just retried
+
+
+def test_batch_size_fits_the_budget():
+    # A batch costs len * 26 CU in one request. Over the per-second budget and the
+    # endpoint rejects it outright, which no amount of retrying can fix.
+    for cu in (330, 660, 3000):
+        assert fw.safe_batch_size(cu) * fw.CU_NONCE <= cu
+
+    assert fw.safe_batch_size(330) == 12  # free tier
+    assert fw.safe_batch_size(0) == fw.MAX_BATCH  # pacing off, batch freely
+    assert fw.safe_batch_size(1) == 1  # never zero
+    assert fw.safe_batch_size(10**9) == fw.MAX_BATCH  # capped
+
+
+def test_oversized_manual_batch_is_flagged(tmp_path, monkeypatch, capsys):
+    source = tmp_path / "wallets.csv"
+    source.write_text(f"{addr(1)}\n")
+    session = FakeSession(nonces={addr(1): 9})
+    monkeypatch.setattr(fw.requests, "Session", lambda: session)
+
+    args = [str(source), "--url", "http://fake", "--out", str(tmp_path / "out"), "--batch-size", "100"]
+    assert fw.main(args) == 0
+    assert "will be rejected" in capsys.readouterr().err
+
+
 # ---------------------------------------------------------------- checkpointing
 
 
@@ -406,7 +524,7 @@ def test_full_run_resumes_from_checkpoint(tmp_path, monkeypatch):
     session = FakeSession(nonces=nonces)
     monkeypatch.setattr(fw.requests, "Session", lambda: session)
 
-    args = [str(source), "--min-tx", "4", "--mode", "nonce", "--url", "http://fake", "--out", str(out)]
+    args = [str(source), "--min-tx", "4", "--mode", "nonce", "--url", "http://fake", "--cu-per-second", "0", "--out", str(out)]
     assert fw.main(args) == 0
 
     expected_pass = sum(1 for a in addresses if nonces[a] >= 4)
@@ -431,7 +549,7 @@ def test_full_both_mode_run_resumes_mid_stage(tmp_path, monkeypatch):
     out = tmp_path / "out"
     session = FakeSession(nonces=nonces, transfers=inbound)
     monkeypatch.setattr(fw.requests, "Session", lambda: session)
-    args = [str(source), "--min-tx", "4", "--url", "http://fake", "--out", str(out), "--workers", "2"]
+    args = [str(source), "--min-tx", "4", "--url", "http://fake", "--cu-per-second", "0", "--out", str(out), "--workers", "2"]
 
     assert fw.main(args) == 0
     expected = {a for i, a in enumerate(addresses) if nonces[a] + inbound[(a, "toAddress")] >= 4}
@@ -459,8 +577,8 @@ def test_resume_refuses_a_checkpoint_built_for_another_threshold(tmp_path, monke
     session = FakeSession(nonces={addr(1): 9})
     monkeypatch.setattr(fw.requests, "Session", lambda: session)
 
-    assert fw.main([str(source), "--min-tx", "4", "--url", "http://fake", "--out", str(out)]) == 0
-    assert fw.main([str(source), "--min-tx", "10", "--url", "http://fake", "--out", str(out)]) == 2
+    assert fw.main([str(source), "--min-tx", "4", "--url", "http://fake", "--cu-per-second", "0", "--out", str(out)]) == 0
+    assert fw.main([str(source), "--min-tx", "10", "--url", "http://fake", "--cu-per-second", "0", "--out", str(out)]) == 2
     err = capsys.readouterr().err
     assert "min_tx=4" in err and "--no-resume" in err
 
@@ -472,8 +590,8 @@ def test_resume_refuses_a_checkpoint_built_in_another_mode(tmp_path, monkeypatch
     session = FakeSession(nonces={addr(1): 9})
     monkeypatch.setattr(fw.requests, "Session", lambda: session)
 
-    assert fw.main([str(source), "--mode", "nonce", "--url", "http://fake", "--out", str(out)]) == 0
-    assert fw.main([str(source), "--mode", "transfers", "--url", "http://fake", "--out", str(out)]) == 2
+    assert fw.main([str(source), "--mode", "nonce", "--url", "http://fake", "--cu-per-second", "0", "--out", str(out)]) == 0
+    assert fw.main([str(source), "--mode", "transfers", "--url", "http://fake", "--cu-per-second", "0", "--out", str(out)]) == 2
     assert "mode='nonce'" in capsys.readouterr().err
 
 
@@ -484,8 +602,8 @@ def test_no_resume_clears_a_mismatched_checkpoint(tmp_path, monkeypatch):
     session = FakeSession(nonces={addr(1): 9}, transfers={(addr(1), "toAddress"): 0})
     monkeypatch.setattr(fw.requests, "Session", lambda: session)
 
-    assert fw.main([str(source), "--min-tx", "4", "--url", "http://fake", "--out", str(out)]) == 0
-    assert fw.main([str(source), "--min-tx", "10", "--url", "http://fake", "--out", str(out), "--no-resume"]) == 0
+    assert fw.main([str(source), "--min-tx", "4", "--url", "http://fake", "--cu-per-second", "0", "--out", str(out)]) == 0
+    assert fw.main([str(source), "--min-tx", "10", "--url", "http://fake", "--cu-per-second", "0", "--out", str(out), "--no-resume"]) == 0
 
 
 def test_changing_the_input_list_does_not_leak_old_wallets(tmp_path, monkeypatch):
@@ -495,13 +613,47 @@ def test_changing_the_input_list_does_not_leak_old_wallets(tmp_path, monkeypatch
 
     first = tmp_path / "a.csv"
     first.write_text(f"{addr(1)}\n")
-    assert fw.main([str(first), "--url", "http://fake", "--out", str(out)]) == 0
+    assert fw.main([str(first), "--url", "http://fake", "--cu-per-second", "0", "--out", str(out)]) == 0
 
     second = tmp_path / "b.csv"
     second.write_text(f"{addr(2)}\n")
-    assert fw.main([str(second), "--url", "http://fake", "--out", str(out)]) == 0
+    assert fw.main([str(second), "--url", "http://fake", "--cu-per-second", "0", "--out", str(out)]) == 0
 
     assert {row["address"] for row in csv.DictReader((out / "results.csv").open())} == {addr(2)}
+
+
+def test_failed_wallets_are_retried_before_reporting(tmp_path, monkeypatch):
+    monkeypatch.setattr(fw.time, "sleep", lambda _s: None)
+    source = tmp_path / "wallets.csv"
+    source.write_text(f"{addr(1)}\n")
+    out = tmp_path / "out"
+
+    # Exhaust every retry inside the client, so the wallet lands as an error;
+    # the run-level retry pass should then pick it up and resolve it.
+    session = FakeSession(
+        nonces={addr(1): 9},
+        script=[FakeResponse(None, status_code=503)] * 8,
+    )
+    monkeypatch.setattr(fw.requests, "Session", lambda: session)
+
+    assert fw.main([str(source), "--url", "http://fake", "--cu-per-second", "0", "--out", str(out)]) == 0
+    assert not (out / "errors.csv").exists()
+    assert [row["address"] for row in csv.DictReader((out / "passed.csv").open())] == [addr(1)]
+
+
+def test_no_retry_flag_leaves_the_failure_reported(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(fw.time, "sleep", lambda _s: None)
+    source = tmp_path / "wallets.csv"
+    source.write_text(f"{addr(1)}\n")
+    out = tmp_path / "out"
+    session = FakeSession(nonces={addr(1): 9}, script=[FakeResponse(None, status_code=503)] * 8)
+    monkeypatch.setattr(fw.requests, "Session", lambda: session)
+
+    args = [str(source), "--url", "http://fake", "--cu-per-second", "0", "--out", str(out), "--no-retry"]
+    assert fw.main(args) == 0
+    assert (out / "errors.csv").exists()
+    # The split must not be presented as usable when wallets are missing from it.
+    assert "WARNING" in capsys.readouterr().out
 
 
 def test_dry_run_needs_no_url(tmp_path, capsys):
@@ -522,7 +674,7 @@ def test_missing_url_is_an_error(tmp_path, monkeypatch, capsys):
 def test_rejects_unknown_category(tmp_path, capsys):
     source = tmp_path / "wallets.csv"
     source.write_text(f"{addr(1)}\n")
-    assert fw.main([str(source), "--categories", "bogus", "--url", "http://fake"]) == 2
+    assert fw.main([str(source), "--categories", "bogus", "--url", "http://fake", "--cu-per-second", "0"]) == 2
     assert "unknown transfer categories" in capsys.readouterr().err
 
 
