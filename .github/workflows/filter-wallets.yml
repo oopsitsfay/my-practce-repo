@@ -1,0 +1,100 @@
+name: Filter wallets
+
+# Run the wallet filter on GitHub's runners instead of a host you pay for.
+# Trigger it from the Actions tab, come back when it is done, download the CSVs.
+#
+# Setup, once:
+#   Settings -> Secrets and variables -> Actions -> New repository secret
+#   Name: ALCHEMY_URL   Value: https://eth-mainnet.g.alchemy.com/v2/YOUR_KEY
+
+on:
+  workflow_dispatch:
+    inputs:
+      wallets_file:
+        description: "Path to the wallet list in this repo"
+        default: "wallet-filter/wallets.csv"
+        required: true
+      min_tx:
+        description: "Keep wallets with at least this many transactions"
+        default: "4"
+        required: true
+      mode:
+        description: "What to count"
+        type: choice
+        options: [both, nonce, transfers]
+        default: both
+      categories:
+        description: "Inbound transfer types (comma separated)"
+        default: "external"
+      cu_per_second:
+        description: "Your Alchemy plan's compute units per second"
+        default: "330"
+
+concurrency:
+  # The Alchemy budget is per key, so two runs would only throttle each other.
+  group: wallet-filter
+  cancel-in-progress: false
+
+jobs:
+  filter:
+    runs-on: ubuntu-latest
+    # A free-tier run of ~8k wallets takes about an hour; the ceiling is 6.
+    timeout-minutes: 350
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - run: pip install requests
+
+      - name: Check the wallet list exists
+        run: |
+          if [ ! -f "${{ inputs.wallets_file }}" ]; then
+            echo "::error::No file at ${{ inputs.wallets_file }}. Commit your list, or point at another path."
+            exit 1
+          fi
+          echo "$(grep -c . "${{ inputs.wallets_file }}") rows in ${{ inputs.wallets_file }}"
+
+      - name: Restore previous progress
+        # Every answer is checkpointed, so a re-run picks up where the last one
+        # stopped -- whether it was cancelled, timed out, or ended with errors.
+        uses: actions/cache@v4
+        with:
+          path: out
+          key: wf-${{ hashFiles(inputs.wallets_file) }}-${{ inputs.min_tx }}-${{ inputs.mode }}-${{ inputs.categories }}-${{ github.run_id }}
+          restore-keys: |
+            wf-${{ hashFiles(inputs.wallets_file) }}-${{ inputs.min_tx }}-${{ inputs.mode }}-${{ inputs.categories }}-
+
+      - name: Run the filter
+        env:
+          ALCHEMY_URL: ${{ secrets.ALCHEMY_URL }}
+        run: |
+          if [ -z "$ALCHEMY_URL" ]; then
+            echo "::error::ALCHEMY_URL secret is not set. Add it in Settings -> Secrets and variables -> Actions."
+            exit 1
+          fi
+          python wallet-filter/filter_wallets.py "${{ inputs.wallets_file }}" \
+            --min-tx "${{ inputs.min_tx }}" \
+            --mode "${{ inputs.mode }}" \
+            --categories "${{ inputs.categories }}" \
+            --cu-per-second "${{ inputs.cu_per_second }}" \
+            --out out
+
+      - name: Write the summary
+        if: always()
+        run: python .github/scripts/summarize.py out/summary.json >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wallet-filter-results
+          # The checkpoint is large and only useful to the cache, not to you.
+          path: |
+            out/*.csv
+            out/summary.json
+          if-no-files-found: warn
+          retention-days: 30

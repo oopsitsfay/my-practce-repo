@@ -1,0 +1,326 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wallet filter</title>
+<link rel="stylesheet" href="/static/theme.css">
+<style>
+  .wrap { max-width: 880px; margin: 0 auto; padding: 40px 24px 90px; }
+
+  /* ---- masthead ---- */
+  header { display: flex; align-items: center; gap: 14px; margin-bottom: 38px; }
+  .mark { width: 36px; height: 36px; border-radius: 10px; background: var(--green);
+          display: grid; place-items: center; flex: none; }
+  .mark svg { width: 18px; height: 18px; }
+  header h1 { font-size: 22px; line-height: 1.1; }
+  header .eyebrow { margin-bottom: 3px; }
+  header form { margin-left: auto; }
+
+  /* A class-level display beats the UA rule for [hidden], so say it explicitly
+     or the banner shows up empty whenever it is meant to be hidden. */
+  .banner[hidden] { display: none; }
+  .banner {
+    display: flex; gap: 10px; align-items: flex-start;
+    padding: 13px 16px; margin-bottom: 24px; font-size: 14px;
+    color: var(--rust); background: var(--card);
+    border: 1px solid var(--line); border-left: 3px solid var(--rust);
+    border-radius: var(--radius-sm);
+  }
+
+  /* ---- composer ---- */
+  .composer { padding: 26px 28px 24px; margin-bottom: 42px; }
+  .composer h2 { margin-bottom: 20px; }
+  .field + .field, .grid + .field { margin-top: 18px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(158px, 1fr)); gap: 16px; margin-top: 18px; }
+  .composer footer { display: flex; align-items: center; gap: 16px; margin-top: 24px; }
+  .composer footer .hint { margin: 0; }
+
+  /* ---- section rule ---- */
+  .rule { display: flex; align-items: center; gap: 14px; margin: 0 0 18px; }
+  .rule::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+  .count { font: 600 12px var(--sans); color: var(--ink-faint); }
+
+  /* ---- job cards ---- */
+  .job { padding: 20px 22px; margin-bottom: 14px; }
+  .job-top { display: flex; align-items: center; gap: 11px; flex-wrap: wrap; }
+  .job-name { font-family: var(--serif); font-size: 17px; font-weight: 600; }
+  .spec { font-size: 12.5px; color: var(--ink-faint); margin-top: 5px; }
+  .spec span + span::before { content: "·"; margin: 0 7px; opacity: .5; }
+
+  .badge {
+    font: 700 10px/1 var(--sans); letter-spacing: .1em; text-transform: uppercase;
+    padding: 5px 9px; border-radius: 20px;
+    color: var(--ink-faint); background: var(--paper-2); border: 1px solid var(--line);
+  }
+  .badge.running   { color: var(--green); background: var(--green-wash); border-color: var(--green-soft); }
+  .badge.queued    { color: var(--amber); }
+  .badge.done      { color: var(--green); background: var(--green-wash); border-color: var(--green-soft); }
+  .badge.failed,
+  .badge.cancelled { color: var(--rust); }
+
+  /* ---- progress ---- */
+  .track { height: 5px; background: var(--paper-2); border: 1px solid var(--line-soft);
+           border-radius: 4px; overflow: hidden; margin: 16px 0 10px; }
+  .fill { height: 100%; background: var(--green); border-radius: 3px; transition: width .5s ease; }
+  .fill.indet { width: 30% !important; animation: slide 1.4s ease-in-out infinite; }
+  @keyframes slide { 0% { margin-left: -30%; } 100% { margin-left: 100%; } }
+  .status { font-size: 13.5px; color: var(--ink-soft); }
+  .status strong { color: var(--ink); font-weight: 600; }
+
+  /* ---- outcome ---- */
+  .outcome { display: flex; gap: 32px; flex-wrap: wrap; margin-top: 16px;
+             padding-top: 16px; border-top: 1px solid var(--line-soft); }
+  .stat .n { font-family: var(--serif); font-size: 26px; font-weight: 600; line-height: 1.1; display: block; }
+  .stat .k { font: 600 10.5px var(--sans); letter-spacing: .1em; text-transform: uppercase;
+             color: var(--ink-faint); margin-top: 4px; display: block; }
+  .stat.pass .n { color: var(--green); }
+  .stat.warn .n { color: var(--amber); }
+
+  .note { font-size: 13px; color: var(--amber); margin-top: 12px; }
+
+  .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 18px; align-items: center; }
+  .dl {
+    font: 600 13px var(--sans); text-decoration: none; color: var(--green);
+    background: var(--green-wash); border: 1px solid transparent;
+    padding: 7px 13px; border-radius: var(--radius-sm);
+    display: inline-flex; align-items: center; gap: 6px;
+  }
+  .dl:hover { border-color: var(--green-soft); }
+  .dl.plain { color: var(--ink-soft); background: transparent; border-color: var(--line); }
+  .spacer { flex: 1; }
+
+  .empty { padding: 46px 24px; text-align: center; color: var(--ink-faint); font-size: 14px; }
+  .empty svg { width: 30px; height: 30px; opacity: .35; margin-bottom: 12px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="mark">
+      <svg viewBox="0 0 24 24" fill="none" stroke="#f4efe3" stroke-width="2"
+           stroke-linecap="round" stroke-linejoin="round">
+        <path d="M3 5h18l-7 8v6l-4 2v-8z"/>
+      </svg>
+    </div>
+    <div>
+      <div class="eyebrow">Ethereum</div>
+      <h1>Wallet filter</h1>
+    </div>
+    <form method="post" action="/logout"><button class="ghost" type="submit">Sign out</button></form>
+  </header>
+
+  <div class="banner" id="banner" hidden></div>
+
+  <section class="card composer">
+    <h2>New job</h2>
+    <form id="form">
+      <div class="field">
+        <label for="file">Wallet list</label>
+        <input type="file" id="file" name="file" accept=".csv,.txt" required>
+        <p class="hint">A CSV or plain list of addresses. Duplicates are removed and
+          malformed rows are reported, not silently dropped.</p>
+      </div>
+
+      <div class="grid">
+        <div>
+          <label for="min_tx">Minimum transactions</label>
+          <input type="number" id="min_tx" name="min_tx" value="4" min="1">
+        </div>
+        <div>
+          <label for="mode">Count</label>
+          <select id="mode" name="mode">
+            <option value="both">In + out</option>
+            <option value="nonce">Outbound only</option>
+            <option value="transfers">Transfers both ways</option>
+          </select>
+        </div>
+        <div>
+          <label for="cu_per_second">Alchemy plan</label>
+          <select id="cu_per_second" name="cu_per_second">
+            <option value="330">Free — 330 CU/s</option>
+            <option value="660">Growth — 660 CU/s</option>
+            <option value="3000">Scale — 3000 CU/s</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="field">
+        <label for="categories">Inbound transfer types</label>
+        <input type="text" id="categories" name="categories" value="external">
+        <p class="hint"><code>external</code> is plain ETH. Add
+          <code>erc20</code>, <code>erc721</code>, <code>erc1155</code> to let token
+          activity qualify a wallet.</p>
+      </div>
+
+      <footer>
+        <button type="submit" id="submit">Start job</button>
+        <p class="hint" id="estimate">Roughly an hour for 8,000 wallets on the free tier.</p>
+      </footer>
+    </form>
+  </section>
+
+  <div class="rule">
+    <h2>Jobs</h2>
+    <span class="count" id="jobcount"></span>
+  </div>
+  <div id="jobs"></div>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const fmt = (n) => (n ?? 0).toLocaleString();
+
+const STAGES = {
+  outbound: "Outbound transactions",
+  inbound:  "Inbound transfers",
+  transfers:"Transfers",
+  retrying: "Retrying failures",
+};
+
+function duration(job) {
+  if (!job.started_at) return null;
+  const secs = Math.max(0, Math.round((job.finished_at || Date.now() / 1000) - job.started_at));
+  if (secs < 60) return `${secs}s`;
+  const m = Math.floor(secs / 60);
+  return m < 60 ? `${m}m ${secs % 60}s` : `${Math.floor(m / 60)}h ${m % 60}m`;
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+function statusLine(job) {
+  if (job.status === "running") {
+    const stage = STAGES[job.stage] || "Starting";
+    let line = `<strong>${stage}</strong> — ${fmt(job.stage_done)} of ${fmt(job.stage_total)}`;
+    if (job.rate_limit_hits) line += ` · ${fmt(job.rate_limit_hits)} rate limits`;
+    return line;
+  }
+  if (job.status === "queued") return job.message || "Waiting — one job runs at a time.";
+  if (job.status === "done") return "";
+  return escapeHtml(job.message || job.status);
+}
+
+function outcome(job) {
+  if (job.status !== "done") return "";
+  const total = job.passed + job.filtered;
+  const share = total ? ((job.passed / total) * 100).toFixed(1) : "0.0";
+  return `<div class="outcome">
+      <div class="stat pass"><span class="n">${fmt(job.passed)}</span><span class="k">Passed · ${share}%</span></div>
+      <div class="stat"><span class="n">${fmt(job.filtered)}</span><span class="k">Filtered out</span></div>
+      ${job.errors ? `<div class="stat warn"><span class="n">${fmt(job.errors)}</span><span class="k">Unresolved</span></div>` : ""}
+    </div>`;
+}
+
+function render(data) {
+  $("banner").hidden = data.alchemy_configured;
+  if (!data.alchemy_configured) {
+    $("banner").textContent = "ALCHEMY_URL is not set on the server — jobs will fail until it is.";
+  }
+
+  $("jobcount").textContent = data.jobs.length
+    ? `${data.jobs.length} total${data.queued ? ` · ${data.queued} active` : ""}` : "";
+
+  if (!data.jobs.length) {
+    $("jobs").innerHTML = `<div class="card empty">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"
+             stroke-linecap="round" stroke-linejoin="round"><path d="M3 5h18l-7 8v6l-4 2v-8z"/></svg>
+        <div>No jobs yet. Upload a wallet list to start.</div>
+      </div>`;
+    return;
+  }
+
+  $("jobs").innerHTML = data.jobs.map((job) => {
+    const active = job.status === "running" || job.status === "queued";
+    const spec = [
+      `${fmt(job.total)} wallets`,
+      `min ${job.min_tx} tx`,
+      { both: "in + out", nonce: "outbound", transfers: "transfers" }[job.mode] || job.mode,
+      duration(job),
+    ].filter(Boolean).map((s) => `<span>${escapeHtml(s)}</span>`).join("");
+
+    const indeterminate = job.status === "queued" || (job.status === "running" && !job.stage_total);
+    const line = statusLine(job);
+
+    return `<article class="card job">
+      <div class="job-top">
+        <span class="job-name">${escapeHtml(job.name)}</span>
+        <span class="badge ${job.status}">${job.status}</span>
+      </div>
+      <div class="spec">${spec}</div>
+
+      ${active ? `<div class="track"><div class="fill ${indeterminate ? "indet" : ""}"
+            style="width:${job.percent}%"></div></div>` : ""}
+      ${line ? `<div class="status">${line}</div>` : ""}
+      ${active && job.resumed ? `<div class="status">${fmt(job.resumed)} carried over from an earlier attempt</div>` : ""}
+
+      ${outcome(job)}
+      ${job.malformed ? `<div class="note">${fmt(job.malformed)} rows skipped as malformed</div>` : ""}
+      ${job.status === "done" && job.errors ? `<div class="note">${escapeHtml(job.message)}</div>` : ""}
+
+      <div class="actions">
+        ${job.status === "done" ? `
+          <a class="dl" href="/api/jobs/${job.id}/download/passed">↓ passed.csv</a>
+          <a class="dl plain" href="/api/jobs/${job.id}/download/filtered">filtered.csv</a>
+          <a class="dl plain" href="/api/jobs/${job.id}/download/results">results.csv</a>
+          ${job.errors ? `<a class="dl plain" href="/api/jobs/${job.id}/download/errors">errors.csv</a>` : ""}` : ""}
+        <span class="spacer"></span>
+        ${active ? `<button class="ghost" onclick="cancelJob('${job.id}')">Cancel</button>` : ""}
+        ${!active && job.status !== "done" ? `<button class="ghost" onclick="resumeJob('${job.id}')">Resume</button>` : ""}
+        ${job.status === "done" && job.errors ? `<button class="ghost" onclick="resumeJob('${job.id}')">Retry failures</button>` : ""}
+        ${!active ? `<button class="ghost" onclick="deleteJob('${job.id}')">Delete</button>` : ""}
+      </div>
+    </article>`;
+  }).join("");
+}
+
+async function refresh() {
+  try {
+    const res = await fetch("/api/jobs");
+    if (res.status === 401) { location.reload(); return; }
+    render(await res.json());
+  } catch { /* transient, e.g. the server restarting */ }
+}
+
+async function cancelJob(id) {
+  if (!confirm("Cancel this job? Progress is saved, so you can resume it.")) return;
+  await fetch(`/api/jobs/${id}/cancel`, { method: "POST" });
+  refresh();
+}
+async function resumeJob(id) {
+  await fetch(`/api/jobs/${id}/resume`, { method: "POST" });
+  refresh();
+}
+async function deleteJob(id) {
+  if (!confirm("Delete this job and its results?")) return;
+  await fetch(`/api/jobs/${id}`, { method: "DELETE" });
+  refresh();
+}
+
+$("form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const button = $("submit");
+  button.disabled = true;
+  button.textContent = "Uploading…";
+  try {
+    const res = await fetch("/api/jobs", { method: "POST", body: new FormData(event.target) });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({ detail: res.statusText }));
+      alert(body.detail || "Upload failed");
+    } else {
+      $("file").value = "";
+    }
+  } finally {
+    button.disabled = false;
+    button.textContent = "Start job";
+    refresh();
+  }
+});
+
+refresh();
+setInterval(refresh, 2000);
+</script>
+</body>
+</html>
