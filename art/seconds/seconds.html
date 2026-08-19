@@ -1,0 +1,2077 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>The Book of Seconds</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+/* A cabinet lit at night. Committed to one visual world on purpose — every
+   colour is painted explicitly so the page holds on any host ground. */
+:root {
+    --ground:    #0d1117;
+    --vitrine:   #0a0e14;
+    --surface:   #151d27;
+    --raised:    #1b2530;
+    --line:      #263141;
+    --line-soft: #1c2531;
+    --text:      #e3e9f0;
+    --muted:     #8a97a8;
+    --dim:       #5d6a7a;
+    --brass:     #c8a02e;
+    --hall:      #3f8f6a;
+    --hall-dim:  #3f8f6a33;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+    background: var(--ground);
+    color: var(--text);
+    font-family: 'IBM Plex Sans', system-ui, sans-serif;
+    font-size: 15px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+}
+
+.page { max-width: 1240px; margin: 0 auto; padding: 40px 28px 72px; }
+
+/* ── masthead ─────────────────────────────────────────────────────── */
+.masthead {
+    display: flex;
+    gap: 22px;
+    align-items: flex-start;
+    padding-bottom: 26px;
+    border-bottom: 1px solid var(--line);
+}
+
+.crest { flex-shrink: 0; width: 54px; height: 54px; color: var(--brass); }
+
+.eyebrow {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.19em;
+    text-transform: uppercase;
+    color: var(--brass);
+}
+
+h1 {
+    font-family: 'Fraunces', Georgia, serif;
+    font-size: clamp(30px, 4.4vw, 44px);
+    font-weight: 500;
+    line-height: 1.08;
+    letter-spacing: -0.015em;
+    text-wrap: balance;
+    margin: 6px 0 8px;
+}
+
+.dek { color: var(--muted); max-width: 62ch; }
+
+/* ── hall tabs ────────────────────────────────────────────────────── */
+.halls {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 10px;
+    margin: 26px 0 30px;
+}
+
+.hall-tab {
+    -webkit-appearance: none;
+    appearance: none;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    padding: 13px 15px;
+    text-align: left;
+    color: var(--muted);
+    font-family: inherit;
+    font-size: 14px;
+    cursor: pointer;
+    transition: border-color .18s, color .18s, background .18s;
+}
+
+.hall-tab .tab-kind {
+    display: block;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--dim);
+    margin-bottom: 3px;
+    transition: color .18s;
+}
+
+.hall-tab .tab-name {
+    font-family: 'Fraunces', Georgia, serif;
+    font-size: 17px;
+    color: var(--text);
+}
+
+.hall-tab:hover { border-color: var(--dim); background: var(--raised); }
+
+.hall-tab[aria-selected="true"] {
+    border-color: var(--tab);
+    background: var(--raised);
+    box-shadow: inset 3px 0 0 var(--tab);
+}
+
+.hall-tab[aria-selected="true"] .tab-kind { color: var(--tab); }
+
+.hall-tab:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
+
+/* ── cabinet ──────────────────────────────────────────────────────── */
+.cabinet {
+    display: grid;
+    grid-template-columns: minmax(0, 1.06fr) minmax(0, 1fr);
+    gap: 28px;
+    align-items: start;
+}
+
+.vitrine {
+    position: relative;
+    background:
+        radial-gradient(ellipse 78% 62% at 50% 34%, #1a232f 0%, var(--vitrine) 72%);
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    overflow: hidden;
+}
+
+.vitrine canvas { display: block; width: 100%; height: auto; }
+
+.vitrine::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    box-shadow: inset 0 0 90px rgba(0,0,0,.62);
+}
+
+.plate-serial {
+    position: absolute;
+    left: 14px;
+    bottom: 11px;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11px;
+    letter-spacing: .08em;
+    color: var(--dim);
+    z-index: 2;
+}
+
+/* ── serial controls ──────────────────────────────────────────────── */
+.serial-bar {
+    display: flex;
+    gap: 8px;
+    margin-top: 12px;
+    flex-wrap: wrap;
+}
+
+.btn {
+    -webkit-appearance: none;
+    appearance: none;
+    font-family: 'IBM Plex Sans', sans-serif;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text);
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    padding: 9px 14px;
+    cursor: pointer;
+    transition: border-color .18s, background .18s;
+}
+
+.btn:hover { border-color: var(--hall); background: var(--raised); }
+.btn:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
+.btn.primary { background: var(--hall); border-color: var(--hall); color: #0b0f14; font-weight: 600; }
+.btn.primary:hover { filter: brightness(1.12); }
+.btn:disabled { opacity: .42; cursor: default; }
+.btn:disabled:hover { border-color: var(--line); background: var(--surface); }
+
+.serial-input {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 13px;
+    color: var(--text);
+    background: var(--vitrine);
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    padding: 9px 11px;
+    width: 108px;
+    text-align: center;
+}
+
+.serial-input:focus { outline: none; border-color: var(--hall); }
+.spacer { flex: 1; }
+
+/* ── dossier ──────────────────────────────────────────────────────── */
+.dossier {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    padding: 24px 24px 26px;
+}
+
+.dossier-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 16px;
+    padding-bottom: 16px;
+    border-bottom: 1px solid var(--line-soft);
+}
+
+.spec-name {
+    font-family: 'Fraunces', Georgia, serif;
+    font-size: 27px;
+    font-weight: 500;
+    line-height: 1.15;
+    text-wrap: balance;
+}
+
+.spec-kind {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: .16em;
+    text-transform: uppercase;
+    color: var(--hall);
+    margin-bottom: 5px;
+}
+
+.tier {
+    flex-shrink: 0;
+    text-align: right;
+}
+
+.tier-badge {
+    display: inline-block;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: .15em;
+    text-transform: uppercase;
+    padding: 5px 10px;
+    border: 1px solid currentColor;
+    border-radius: 2px;
+    white-space: nowrap;
+}
+
+.tier-odds {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11px;
+    color: var(--muted);
+    margin-top: 7px;
+    font-variant-numeric: tabular-nums;
+}
+
+.flavour {
+    font-family: 'Fraunces', Georgia, serif;
+    font-size: 16px;
+    line-height: 1.55;
+    color: var(--muted);
+    font-style: italic;
+    padding: 16px 0;
+    border-bottom: 1px solid var(--line-soft);
+    text-wrap: balance;
+}
+
+.sec-label {
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: .17em;
+    text-transform: uppercase;
+    color: var(--dim);
+    margin: 22px 0 12px;
+}
+
+/* traits */
+.traits { display: flex; flex-direction: column; gap: 11px; }
+
+.trait { display: grid; grid-template-columns: 88px 1fr auto; gap: 12px; align-items: baseline; }
+
+.trait-key { font-size: 12px; color: var(--dim); }
+
+.trait-val { font-size: 14px; color: var(--text); }
+
+.trait-bar {
+    grid-column: 2 / 4;
+    height: 2px;
+    background: var(--line);
+    border-radius: 2px;
+    overflow: hidden;
+    margin-top: -4px;
+}
+
+.trait-bar span { display: block; height: 100%; background: var(--hall); opacity: .75; }
+
+.trait-pct {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 12px;
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+
+/* marks (stats) */
+.marks { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 22px; }
+
+.mark { display: grid; grid-template-columns: 1fr auto; gap: 4px 10px; align-items: center; }
+
+.mark-key { font-size: 12px; color: var(--dim); }
+
+.mark-num {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 13px;
+    color: var(--text);
+    font-variant-numeric: tabular-nums;
+}
+
+.pips { grid-column: 1 / 3; display: flex; gap: 2px; }
+
+.pip { flex: 1; height: 5px; background: var(--line); border-radius: 1px; }
+.pip.on { background: var(--hall); }
+
+/* ── casting strip ────────────────────────────────────────────────── */
+.strip { margin-top: 40px; }
+
+.strip-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    border-bottom: 1px solid var(--line);
+    padding-bottom: 10px;
+    margin-bottom: 16px;
+}
+
+.strip-title { font-family: 'Fraunces', Georgia, serif; font-size: 20px; font-weight: 500; }
+
+.strip-count { font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: var(--dim); }
+
+.strip-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(112px, 1fr));
+    gap: 12px;
+}
+
+.chip {
+    -webkit-appearance: none;
+    appearance: none;
+    background: var(--vitrine);
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    padding: 0;
+    cursor: pointer;
+    overflow: hidden;
+    transition: border-color .18s;
+    text-align: left;
+}
+
+.chip:hover { border-color: var(--hall); }
+.chip:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
+.chip[aria-current="true"] { border-color: var(--hall); box-shadow: 0 0 0 1px var(--hall); }
+.chip canvas { display: block; width: 100%; height: auto; }
+
+.chip-foot {
+    padding: 6px 8px 7px;
+    border-top: 1px solid var(--line-soft);
+    background: var(--surface);
+}
+
+.chip-serial {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 10px;
+    color: var(--dim);
+    font-variant-numeric: tabular-nums;
+}
+
+.chip-tier { font-size: 10px; font-weight: 600; letter-spacing: .1em; text-transform: uppercase; }
+
+.strip-empty { color: var(--dim); font-size: 14px; padding: 8px 0 4px; }
+
+/* ── lore ─────────────────────────────────────────────────────────── */
+.lore { margin-top: 64px; padding-top: 34px; border-top: 1px solid var(--line); }
+
+.lore-body { max-width: 64ch; }
+
+.lore h2 {
+    font-family: 'Fraunces', Georgia, serif;
+    font-size: 27px;
+    font-weight: 500;
+    text-wrap: balance;
+    margin: 8px 0 16px;
+}
+
+.lore p { color: var(--muted); margin-bottom: 15px; }
+
+.lore em { color: var(--text); font-style: italic; }
+
+.lore blockquote {
+    font-family: 'Fraunces', Georgia, serif;
+    font-size: 18px;
+    font-style: italic;
+    color: var(--text);
+    border-left: 2px solid var(--brass);
+    padding-left: 18px;
+    margin: 24px 0;
+    text-wrap: balance;
+}
+
+.halls-legend {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 18px 26px;
+    margin-top: 28px;
+}
+
+.legend-item { border-top: 2px solid var(--lc); padding-top: 11px; }
+
+.legend-name { font-family: 'Fraunces', Georgia, serif; font-size: 17px; margin-bottom: 4px; }
+
+.legend-text { font-size: 13.5px; color: var(--muted); line-height: 1.55; }
+
+.colophon {
+    margin-top: 44px;
+    padding-top: 18px;
+    border-top: 1px solid var(--line-soft);
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11.5px;
+    color: var(--dim);
+    line-height: 1.8;
+}
+
+@media (max-width: 900px) {
+    .cabinet { grid-template-columns: 1fr; }
+    .halls { grid-template-columns: 1fr 1fr; }
+}
+
+@media (max-width: 560px) {
+    .page { padding: 26px 16px 56px; }
+    .masthead { flex-direction: column; gap: 14px; }
+    .halls { grid-template-columns: 1fr; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    * { transition: none !important; animation: none !important; }
+}
+</style>
+</head>
+<body>
+<div class="page">
+
+    <header class="masthead">
+        <svg class="crest" viewBox="0 0 48 48" fill="none" aria-hidden="true">
+            <circle cx="24" cy="24" r="21" stroke="currentColor" stroke-width="1.1" opacity=".55"/>
+            <circle cx="24" cy="24" r="16" stroke="currentColor" stroke-width="1.1" opacity=".3"/>
+            <path d="M24 8v32M8 24h32" stroke="currentColor" stroke-width="1" opacity=".28"/>
+            <path d="M24 13l7.5 11L24 35l-7.5-11z" stroke="currentColor" stroke-width="1.3"/>
+            <circle cx="24" cy="24" r="2.6" fill="currentColor"/>
+        </svg>
+        <div>
+            <div class="eyebrow">Registry of Proxies · The Vaurn Assizes</div>
+            <h1>The Book of Seconds</h1>
+            <p class="dek">
+                No one in Vaurn fights their own duel. You send a second, and the
+                Registry recognises four kinds. Every second ever entered is here,
+                recoverable forever by its serial.
+            </p>
+        </div>
+    </header>
+
+    <nav class="halls" role="tablist" aria-label="Halls of the Registry" id="halls"></nav>
+
+    <main class="cabinet">
+        <section class="plate" aria-label="Specimen plate">
+            <div class="vitrine">
+                <canvas id="plate" width="1360" height="1360" role="img" aria-label="The current second, drawn"></canvas>
+                <div class="plate-serial" id="plate-serial">—</div>
+            </div>
+            <div class="serial-bar">
+                <button class="btn" id="prev" type="button">← Prev</button>
+                <input class="serial-input" id="serial" type="number" min="1" step="1" value="1" aria-label="Serial number">
+                <button class="btn" id="next" type="button">Next →</button>
+                <button class="btn primary" id="cast" type="button">Draw a second</button>
+                <span class="spacer"></span>
+                <button class="btn" id="save" type="button">Save plate</button>
+            </div>
+        </section>
+
+        <aside class="dossier" aria-live="polite">
+            <div class="dossier-head">
+                <div>
+                    <div class="spec-kind" id="d-kind">—</div>
+                    <div class="spec-name" id="d-name">—</div>
+                </div>
+                <div class="tier">
+                    <span class="tier-badge" id="d-tier">—</span>
+                    <div class="tier-odds" id="d-odds">—</div>
+                </div>
+            </div>
+
+            <p class="flavour" id="d-flavour">—</p>
+
+            <div class="sec-label">Recognised traits · share of all seconds in this hall</div>
+            <div class="traits" id="d-traits"></div>
+
+            <div class="sec-label" id="d-marks-label">Marks</div>
+            <div class="marks" id="d-marks"></div>
+        </aside>
+    </main>
+
+    <section class="strip">
+        <div class="strip-head">
+            <h2 class="strip-title">Seconds drawn this sitting</h2>
+            <span class="strip-count" id="strip-count">0 entered</span>
+        </div>
+        <div class="strip-grid" id="strip-grid"></div>
+        <p class="strip-empty" id="strip-empty">
+            Nothing entered yet. Draw a second, or type a serial you already know.
+        </p>
+    </section>
+
+    <section class="lore">
+        <div class="lore-body">
+            <div class="eyebrow">The standing custom</div>
+            <h2>What you send in your place</h2>
+
+            <p>
+                Vaurn abolished the personal duel in the ninth year of the Assizes,
+                for the reason every city eventually finds: the people most often
+                called to the field were the least able to stand on it. The law that
+                replaced it did not abolish the duel. It abolished only the
+                requirement that you be present at your own.
+            </p>
+
+            <p>
+                What you send in your place is called a <em>second</em>. The Registry
+                will recognise four kinds and no others, and the four are not
+                alternatives so much as four different theories of what a champion
+                is. The Halls have argued this for two hundred years and each
+                considers the other three a category error.
+            </p>
+
+            <div class="halls-legend" id="legend"></div>
+
+            <blockquote>
+                A second is not a weapon. A weapon is a thing you use. A second is a
+                thing you become, briefly, in another room.
+            </blockquote>
+
+            <p>
+                The Registry itself takes no position. It enters the second, assigns
+                it a serial, and files the plate. Serials are permanent and are never
+                reissued: quote one to any clerk in Vaurn, in this century or the
+                next, and the same second will be drawn out for you exactly as it was
+                first entered — the same horn, the same crest, the same wear on the
+                same escapement. Nothing about a second is remembered. Everything
+                about it is <em>recoverable</em>, which the clerks will tell you is a
+                different and better thing.
+            </p>
+
+            <p>
+                The percentages beside each trait are the Registry's own, taken from
+                the full roll rather than from the plates that happen to be famous.
+                They are published because of the Lantern Street affair, in which a
+                dealer sold the same unremarkable warden eleven times, each time as
+                the last of its kind.
+            </p>
+
+            <div class="colophon" id="colophon"></div>
+        </div>
+    </section>
+</div>
+<script>
+/* ═══════════════════════════════════════════════════════════════════════
+   THE BOOK OF SECONDS — registry engine
+
+   A serial is the whole specimen. buildSpec(hall, serial) is pure and
+   deterministic: the same serial yields the same second forever, which is
+   the one promise the Registry actually makes.
+
+   Trait tables are weighted and sorted heaviest-first, so a trait's index
+   is its commonness rank. Rarity is not decorative — the odds printed on
+   a dossier are computed from these weights, not chosen.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+function mulberry32(a) {
+    return function () {
+        a |= 0; a = (a + 0x6D2B79F5) | 0;
+        let t = Math.imul(a ^ (a >>> 15), 1 | a);
+        t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+}
+
+function streamSeed(hallIndex, serial, salt) {
+    let h = (serial >>> 0) ^ 0x9e3779b9;
+    h = Math.imul(h ^ (hallIndex + 1) * 0x85ebca6b, 0xc2b2ae35);
+    h = Math.imul(h ^ salt * 0x27d4eb2f, 0x165667b1);
+    return (h ^ (h >>> 13)) >>> 0;
+}
+
+/* Tiers are bands on the share of a hall that is at least this unusual.
+   Absolute joint probability is useless here — with six traits every second
+   is astronomically unlikely, so everything would read as priceless. What a
+   collector actually means by "rare" is a rank against the roll. */
+const TIERS = [
+    { name: 'Common',   min: 0.25,  color: '#9aa7b8' },
+    { name: 'Uncommon', min: 0.06,  color: '#79a88b' },
+    { name: 'Rare',     min: 0.012, color: '#6f8fd4' },
+    { name: 'Superior', min: 0.002, color: '#c8a02e' },
+    { name: 'Singular', min: 0,     color: '#c2603f' }
+];
+
+/* ── the four halls ──────────────────────────────────────────────── */
+
+const HALLS = [
+    {
+        id: 'grudges',
+        hall: 'Hall of Grudges',
+        kind: 'Bred second',
+        accent: '#4f9a72',
+        legend: 'A grudge is bred, not built. The beetle carries it, and the breeder is careful never to name what the grudge is about.',
+        marksLabel: 'Marks of the beetle',
+        traits: {
+            Horn:   [['Hornless', 300], ['Single Spike', 250], ['Forked Halberd', 180], ['Pincer', 140], ['Antler', 90], ['Crown', 40]],
+            Shell:  [['Plain Striae', 280], ['Chevron', 230], ['Spotted', 190], ['Banded', 150], ['Marbled', 100], ['Oilslick', 50]],
+            Morph:  [['Bog Brown', 260], ['Ironblack', 240], ['Wine', 190], ['Verdigris', 160], ['Amber', 100], ['Ghost', 50]],
+            Stance: [['Squat', 340], ['Long-legged', 300], ['Broad', 220], ['Reared', 140]],
+            Temper: [['Slow to wake', 330], ['Even', 280], ['Snappish', 230], ['Berserk', 110], ['Unreadable', 50]],
+            Notch:  [['Unmarked', 420], ['One notch', 280], ['Two notches', 180], ['Three notches', 90], ['Countless', 30]]
+        },
+        marks: [
+            { key: 'Grip',   from: 'Stance' },
+            { key: 'Charge', from: 'Horn' },
+            { key: 'Guard',  from: 'Shell' },
+            { key: 'Nerve',  from: 'Temper' }
+        ]
+    },
+    {
+        id: 'faces',
+        hall: 'Hall of Faces',
+        kind: 'Worn second',
+        accent: '#c05a42',
+        legend: 'A face is worn. Whoever puts it on is nobody for the duration, which is the entire point and also the entire objection.',
+        marksLabel: 'Marks of the warden',
+        traits: {
+            Helm:    [['Round Sallet', 290], ['Tall Barbute', 250], ['Beaked', 190], ['Frog-mouth', 150], ['Doubled', 90], ['Faceless', 30]],
+            Crest:   [['None', 310], ['Comb', 250], ['Plume', 200], ['Spike', 140], ['Wing', 70], ['Antlers', 30]],
+            Visor:   [['Single Slit', 340], ['Cross Slit', 260], ['Grille', 220], ['Blind', 120], ['Open', 60]],
+            Field:   [['Per Pale', 260], ['Per Fess', 240], ['Quarterly', 200], ['Saltire', 160], ['Per Bend', 90], ['Plain', 50]],
+            Charge:  [['Mullet', 250], ['Lozenge', 230], ['Cross', 200], ['Chevron', 170], ['Annulet', 100], ['Nothing', 50]],
+            Tincture:[['Iron & Bone', 280], ['Blood & Ash', 240], ['Moss & Gold', 190], ['Slate & Rose', 150], ['Sable & Silver', 90], ['Untinctured', 50]]
+        },
+        marks: [
+            { key: 'Bearing', from: 'Helm' },
+            { key: 'Menace',  from: 'Crest' },
+            { key: 'Sight',   from: 'Visor' },
+            { key: 'Standing',from: 'Field' }
+        ]
+    },
+    {
+        id: 'hours',
+        hall: 'Hall of Hours',
+        kind: 'Wound second',
+        accent: '#c8a02e',
+        legend: 'An hour is wound. It will do exactly what it was built to do for exactly as long as the spring lasts, and the Hall considers this the only honest form of courage.',
+        marksLabel: 'Marks of the movement',
+        traits: {
+            Escapement:  [['Verge', 300], ['Anchor', 250], ['Deadbeat', 190], ['Detent', 150], ['Grasshopper', 80], ['Unregulated', 30]],
+            Casing:      [['Sheet Brass', 290], ['Riveted Iron', 250], ['Lacquered', 200], ['Skeleton', 150], ['Glass-fronted', 80], ['Unhoused', 30]],
+            Winder:      [['Side Key', 330], ['Crown', 270], ['Fusee Chain', 210], ['Weight & Cord', 130], ['Sealed', 60]],
+            Train:       [['Four Wheels', 320], ['Five Wheels', 280], ['Six Wheels', 210], ['Compound', 130], ['Doubled Train', 60]],
+            Complication:[['None', 350], ['Striking', 250], ['Calendar', 190], ['Repeating', 130], ['Orrery', 60], ['Unlisted', 20]],
+            Wear:        [['Factory Bright', 240], ['Handled', 300], ['Worn', 240], ['Pitted', 150], ['Salvaged', 70]]
+        },
+        marks: [
+            { key: 'Rate',      from: 'Escapement' },
+            { key: 'Reserve',   from: 'Winder' },
+            { key: 'Housing',   from: 'Casing' },
+            { key: 'Endurance', from: 'Wear' }
+        ]
+    },
+    {
+        id: 'distances',
+        hall: 'Hall of Distances',
+        kind: 'Named second',
+        accent: '#7796d6',
+        legend: 'A distance is named. Nothing is sent at all — a figure of stars is nominated, and both parties agree to abide by what it does, which is nothing, forever.',
+        marksLabel: 'Marks of the figure',
+        traits: {
+            Asterism: [['The Ladder', 270], ['The Hook', 240], ['The Yoke', 200], ['The Scythe', 160], ['The Lantern', 100], ['The Broken Ring', 30]],
+            Stars:    [['Five', 300], ['Seven', 270], ['Nine', 200], ['Eleven', 140], ['Thirteen', 70], ['Twenty-one', 20]],
+            Primary:  [['Faint', 310], ['Steady', 280], ['Bright', 220], ['Blazing', 130], ['Variable', 60]],
+            Field:    [['Empty', 330], ['Dusted', 280], ['Nebulous', 200], ['Clouded', 130], ['Curdled', 60]],
+            Double:   [['None', 400], ['One Pair', 300], ['Two Pairs', 180], ['A Triple', 90], ['Unresolved', 30]],
+            Crossing: [['Clear of the Ecliptic', 420], ['Grazing', 290], ['Crossed Once', 190], ['Crossed Twice', 80], ['Occulted', 20]]
+        },
+        marks: [
+            { key: 'Altitude', from: 'Asterism' },
+            { key: 'Lustre',   from: 'Primary' },
+            { key: 'Spread',   from: 'Stars' },
+            { key: 'Auspice',  from: 'Crossing' }
+        ]
+    }
+];
+
+/* sort every table heaviest-first so a trait's index is its commonness rank,
+   and precompute totals once */
+HALLS.forEach(function (h) {
+    h.tables = {};
+    Object.keys(h.traits).forEach(function (k) {
+        const rows = h.traits[k].slice().sort(function (a, b) { return b[1] - a[1]; });
+        h.tables[k] = { rows: rows, total: rows.reduce(function (s, r) { return s + r[1]; }, 0) };
+    });
+});
+
+/* ── specimen construction ───────────────────────────────────────── */
+
+
+function pickWeighted(table, r) {
+    let x = r * table.total;
+    for (let i = 0; i < table.rows.length; i++) {
+        x -= table.rows[i][1];
+        if (x < 0 || i === table.rows.length - 1) return i;
+    }
+    return 0;
+}
+
+/* The Registry calibrates each hall against its own roll: one pass draws a
+   large sample, banks the sorted unusualness scores, and checks that the
+   printed trait shares match what the generator actually produces. */
+const SAMPLES = 16000;
+
+const CALIB = HALLS.map(function (h, hi) {
+    const keys = Object.keys(h.tables);
+    const scores = new Float64Array(SAMPLES);
+    const counts = {};
+    keys.forEach(function (k) { counts[k] = {}; });
+
+    for (let s = 1; s <= SAMPLES; s++) {
+        const rng = mulberry32(streamSeed(hi, s, 1));
+        let score = 0;
+        for (let j = 0; j < keys.length; j++) {
+            const t = h.tables[keys[j]];
+            const i = pickWeighted(t, rng());
+            score -= Math.log(t.rows[i][1] / t.total);
+            const v = t.rows[i][0];
+            counts[keys[j]][v] = (counts[keys[j]][v] || 0) + 1;
+        }
+        scores[s - 1] = score;
+    }
+    scores.sort();
+
+    let dev = 0;
+    keys.forEach(function (k) {
+        const t = h.tables[k];
+        t.rows.forEach(function (row) {
+            dev = Math.max(dev, Math.abs((counts[k][row[0]] || 0) / SAMPLES - row[1] / t.total));
+        });
+    });
+    return { scores: scores, dev: dev };
+});
+
+/* share of this hall at least as unusual as `score` */
+function rarityOf(hallIndex, score) {
+    const sc = CALIB[hallIndex].scores;
+    let lo = 0, hi = sc.length;
+    while (lo < hi) { const mid = (lo + hi) >> 1; if (sc[mid] < score) lo = mid + 1; else hi = mid; }
+    return Math.max(1 / sc.length, (sc.length - lo) / sc.length);
+}
+
+function buildSpec(hallIndex, serial) {
+    const hall = HALLS[hallIndex];
+    const rng = mulberry32(streamSeed(hallIndex, serial, 1));
+    const keys = Object.keys(hall.tables);
+    const traits = {};
+    let joint = 1;
+
+    keys.forEach(function (k) {
+        const t = hall.tables[k];
+        const i = pickWeighted(t, rng());
+        const p = t.rows[i][1] / t.total;
+        traits[k] = { value: t.rows[i][0], p: p, index: i, rank: t.rows.length };
+        joint *= p;
+    });
+
+    let score = 0;
+    keys.forEach(function (k) { score -= Math.log(traits[k].p); });
+    const rarity = rarityOf(hallIndex, score);
+    const oneIn = 1 / rarity;
+    let tier = TIERS[TIERS.length - 1];
+    for (let i = 0; i < TIERS.length; i++) { if (rarity >= TIERS[i].min) { tier = TIERS[i]; break; } }
+
+    const mrng = mulberry32(streamSeed(hallIndex, serial, 2));
+    const marks = hall.marks.map(function (m) {
+        const t = traits[m.from];
+        const scarcity = t.index / Math.max(1, t.rank - 1);          // 0 common … 1 rarest
+        const v = Math.round(3 + scarcity * 9 + mrng() * 8);
+        return { key: m.key, value: Math.max(1, Math.min(20, v)) };
+    });
+
+    return {
+        hallIndex: hallIndex, hall: hall, serial: serial,
+        traits: traits, keys: keys, joint: joint, rarity: rarity, oneIn: oneIn, tier: tier,
+        marks: marks,
+        name: NAMERS[hall.id](traits, mulberry32(streamSeed(hallIndex, serial, 3))),
+        flavour: FLAVOUR[hall.id](traits),
+        rng: function (salt) { return mulberry32(streamSeed(hallIndex, serial, salt)); }
+    };
+}
+</script>
+<script>
+/* ── naming and flavour: deterministic, drawn from the traits themselves ── */
+
+function pick(arr, r) { return arr[Math.floor(r * arr.length) % arr.length]; }
+
+const NAMERS = {
+    grudges: function (t, r) {
+        const adj = ['Long', 'Quiet', 'Old', 'Standing', 'Unsettled', 'Polite', 'Cold', 'Patient'];
+        const noun = ['Grudge', 'Argument', 'Objection', 'Debt', 'Refusal', 'Complaint', 'Reminder', 'Silence'];
+        const ord = ['Second', 'Third', 'Fifth', 'Sixth', 'Ninth', 'Twelfth', 'Nineteenth', 'Fortieth'];
+        const place = ['Marrow', 'Ash Lane', 'the Weir', 'Tanner’s Row', 'Underbridge', 'the Cut'];
+        const form = Math.floor(r() * 3);
+        if (form === 0) return 'The ' + pick(adj, r()) + ' ' + pick(noun, r());
+        if (form === 1) return pick(ord, r()) + ' ' + pick(noun, r());
+        return pick(noun, r()) + ' of ' + pick(place, r());
+    },
+    faces: function (t, r) {
+        const gate = ['the Sixth Gate', 'Low Ward', 'the Coping', 'Barrow Gate', 'the Ninth Stair', 'the Water Steps'];
+        const adj = ['Patient', 'Iron', 'Late', 'Silent', 'Borrowed', 'Twelfth', 'Unclaimed'];
+        const title = ['Face', 'Warden', 'Keeper', 'Answer', 'Proxy', 'Stand-in'];
+        const house = ['Aubrec', 'Vance', 'Ottoline', 'Marsh', 'Kestrel', 'Dunnock'];
+        const form = Math.floor(r() * 3);
+        if (form === 0) return 'Warden of ' + pick(gate, r());
+        if (form === 1) return 'The ' + pick(adj, r()) + ' ' + pick(title, r());
+        return 'The ' + pick(house, r()) + ' ' + pick(title, r());
+    },
+    hours: function (t, r) {
+        const maker = ['Ilves', 'Brandt', 'Corvo', 'Halloway', 'Sarn', 'Vestergaard', 'Pell'];
+        const adj = ['Faithful', 'Late', 'Half-wound', 'Obedient', 'Corrected', 'Borrowed', 'Sealed'];
+        const thing = ['Hour', 'Movement', 'Regulator', 'Escapement', 'Second', 'Remainder'];
+        const form = Math.floor(r() * 3);
+        if (form === 0) return pick(maker, r()) + ' No. ' + (11 + Math.floor(r() * 880));
+        if (form === 1) return 'The ' + pick(adj, r()) + ' ' + pick(thing, r());
+        return pick(maker, r()) + '’s ' + pick(thing, r());
+    },
+    distances: function (t, r) {
+        const greek = ['Alpha', 'Beta', 'Gamma', 'Delta', 'Epsilon', 'Zeta', 'Eta'];
+        const adj = ['Low', 'Winter', 'Drowned', 'Late-rising', 'Unfavoured', 'Northern', 'Returning'];
+        const fig = t.Asterism.value.replace(/^The /, '');
+        const form = Math.floor(r() * 3);
+        if (form === 0) return pick(greek, r()) + ' of the ' + fig;
+        if (form === 1) return 'The ' + pick(adj, r()) + ' ' + fig;
+        return 'The ' + fig + ', ' + pick(['Argued', 'Nominated', 'Disputed', 'Upheld'], r());
+    }
+};
+
+const FLAVOUR = {
+    grudges: function (t) {
+        const notch = {
+            'Unmarked': 'has never been carried to the pit',
+            'One notch': 'has been carried once and came back',
+            'Two notches': 'has twice been carried back in a cloth',
+            'Three notches': 'is running out of shell to notch',
+            'Countless': 'is older than the breeder who keeps it'
+        }[t.Notch.value];
+        return t.Morph.value.toLowerCase() + ', ' + t.Stance.value.toLowerCase() +
+               ', ' + t.Temper.value.toLowerCase() + ' — and ' + notch + '.';
+    },
+    faces: function (t) {
+        const v = {
+            'Single Slit': 'sees one thing at a time',
+            'Cross Slit': 'sees corners',
+            'Grille': 'sees everything and admits to nothing',
+            'Blind': 'is worn by people who already know the room',
+            'Open': 'is worn by people who want to be recognised afterwards'
+        }[t.Visor.value];
+        return 'A ' + t.Helm.value.toLowerCase() + ' in ' + t.Tincture.value.toLowerCase() +
+               '. It ' + v + '.';
+    },
+    hours: function (t) {
+        const w = {
+            'Factory Bright': 'never been wound in anger',
+            'Handled': 'the finish worn off its crown',
+            'Worn': 'a groove where a thumb goes',
+            'Pitted': 'been left out in weather it was not built for',
+            'Salvaged': 'been taken out of something else that stopped'
+        }[t.Wear.value];
+        return t.Escapement.value.toLowerCase() + ' escapement, ' + t.Casing.value.toLowerCase() +
+               ' case, ' + t.Complication.value.toLowerCase() + ' complication. Has ' + w + '.';
+    },
+    distances: function (t) {
+        const c = {
+            'Clear of the Ecliptic': 'nothing ever passes in front of it',
+            'Grazing': 'the ecliptic brushes its lowest star',
+            'Crossed Once': 'the ecliptic cuts it once a year',
+            'Crossed Twice': 'it is interrupted twice a year and both parties must wait',
+            'Occulted': 'it disappears entirely for eleven nights, during which no duel stands'
+        }[t.Crossing.value];
+        return t.Stars.value.toLowerCase() + ' stars, the primary ' + t.Primary.value.toLowerCase() +
+               ', on a ' + t.Field.value.toLowerCase() + ' field — and ' + c + '.';
+    }
+};
+</script>
+<script>
+/* ═══════════════════════════════════════════════════════════════════════
+   RENDERERS — each authored in a 1000×1000 space; the caller scales, so
+   one routine serves both the lit plate and the thumbnails. The canvas is
+   left transparent: the vitrine behind it supplies the ground, which also
+   lets a chipped shell erase to real depth rather than to a painted patch.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+function hx(h) {
+    const v = parseInt(h.slice(1), 16);
+    return [(v >> 16) & 255, (v >> 8) & 255, v & 255];
+}
+function rgba(h, a) { const c = hx(h); return 'rgba(' + c[0] + ',' + c[1] + ',' + c[2] + ',' + a + ')'; }
+function shade(h, amt) {
+    const c = hx(h).map(function (v) {
+        return Math.max(0, Math.min(255, Math.round(amt > 0 ? v + (255 - v) * amt : v * (1 + amt))));
+    });
+    return 'rgb(' + c[0] + ',' + c[1] + ',' + c[2] + ')';
+}
+
+/* ── 1 · HALL OF GRUDGES — the bred second ───────────────────────── */
+
+const MORPHS = {
+    'Bog Brown': ['#4a3018', '#8a6136'], 'Ironblack': ['#171b21', '#414b57'],
+    'Wine':      ['#3f1823', '#84384c'], 'Verdigris': ['#1d3f36', '#4f9a7c'],
+    'Amber':     ['#6b3d0c', '#c8912e'], 'Ghost':     ['#9a958a', '#e8e3d6']
+};
+
+function drawBeetle(ctx, spec) {
+    const t = spec.traits;
+    const r = spec.rng(11);
+    const col = MORPHS[t.Morph.value];
+    const dark = col[0], lite = col[1];
+
+    const stance = t.Stance.value;
+    const wideF = stance === 'Broad' ? 1.16 : stance === 'Squat' ? 1.1 : 1;
+    const longF = stance === 'Squat' ? 0.9 : stance === 'Reared' ? 1.04 : 1;
+    const legF  = stance === 'Long-legged' ? 1.35 : stance === 'Squat' ? 0.78 : 1;
+    const lift  = stance === 'Reared' ? -34 : 0;
+
+    const EW = 176 * wideF;                      // elytra half-width
+    const ey0 = 372 + lift, ey1 = 372 + 452 * longF;
+
+    ctx.save();
+    ctx.translate(500, 40);
+
+    // ground shadow
+    ctx.save();
+    ctx.globalAlpha = 0.4;
+    const gs = ctx.createRadialGradient(0, ey1 - 40, 10, 0, ey1 - 40, EW * 1.9);
+    gs.addColorStop(0, 'rgba(0,0,0,.75)'); gs.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = gs;
+    ctx.beginPath(); ctx.ellipse(0, ey1 - 30, EW * 1.85, 110, 0, 0, 7); ctx.fill();
+    ctx.restore();
+
+    // ── legs (behind the body)
+    ctx.strokeStyle = shade(dark, -0.08);
+    ctx.lineCap = 'round';
+    const legs = [[278, 122, -0.30], [324, 110, 0.04], [372, 124, 0.56]];
+    for (let s = -1; s <= 1; s += 2) {
+        legs.forEach(function (L, i) {
+            const y = L[0] + lift, len = L[1] * legF, ang = L[2];
+            const x1 = s * 118, y1 = y;
+            const x2 = x1 + s * len * Math.cos(ang), y2 = y1 + len * Math.sin(ang) + 26;
+            const x3 = x2 + s * len * 0.6, y3 = y2 + len * 0.66 + 34;
+            ctx.lineWidth = 23 - i * 1.6;
+            ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+            ctx.lineWidth = 16 - i * 1.4;
+            ctx.beginPath(); ctx.moveTo(x2, y2); ctx.lineTo(x3, y3); ctx.stroke();
+            ctx.lineWidth = 6.5;                                // tarsal claw
+            ctx.beginPath(); ctx.moveTo(x3, y3); ctx.lineTo(x3 + s * 20, y3 + 16); ctx.stroke();
+        });
+    }
+
+    // ── elytra
+    function elytronPath(s) {
+        ctx.beginPath();
+        ctx.moveTo(0, ey0);
+        ctx.bezierCurveTo(s * EW * 0.99, ey0 + 4, s * EW, ey0 + 74, s * EW, ey0 + 210);
+        ctx.bezierCurveTo(s * EW, ey1 - 118, s * EW * 0.54, ey1 - 16, 0, ey1);
+        ctx.closePath();
+    }
+
+    for (let s = -1; s <= 1; s += 2) {
+        elytronPath(s);
+        const g = ctx.createLinearGradient(s * -EW * 0.2, ey0, s * EW, ey1);
+        g.addColorStop(0, lite);
+        g.addColorStop(0.4, shade(lite, -0.18));
+        g.addColorStop(1, shade(dark, -0.2));
+        ctx.fillStyle = g;
+        ctx.fill();
+
+        // pattern, clipped to the shell
+        ctx.save();
+        elytronPath(s); ctx.clip();
+        paintShell(ctx, t.Shell.value, s, EW, ey0, ey1, dark, lite, spec.rng(12 + s));
+        ctx.restore();
+
+        // rim
+        elytronPath(s);
+        ctx.lineWidth = 4; ctx.strokeStyle = rgba(shade(dark, -0.5), 0.85); ctx.stroke();
+
+        // specular
+        ctx.save();
+        elytronPath(s); ctx.clip();
+        const sp = ctx.createLinearGradient(s * EW * 0.1, ey0, s * EW * 0.85, ey0 + 300);
+        sp.addColorStop(0, 'rgba(255,255,255,.15)'); sp.addColorStop(1, 'rgba(255,255,255,0)');
+        ctx.fillStyle = sp;
+        ctx.beginPath(); ctx.ellipse(s * EW * 0.44, ey0 + 150, EW * 0.34, 150, s * 0.32, 0, 7); ctx.fill();
+        ctx.restore();
+    }
+
+    // seam
+    ctx.lineWidth = 5; ctx.strokeStyle = rgba(shade(dark, -0.55), 0.9);
+    ctx.beginPath(); ctx.moveTo(0, ey0 + 4); ctx.lineTo(0, ey1 - 6); ctx.stroke();
+
+    // ── pronotum
+    const py0 = 250 + lift, py1 = ey0 + 10;
+    ctx.beginPath();
+    ctx.moveTo(-96, py0);
+    ctx.bezierCurveTo(-140, py0 + 30, -142, py1 - 34, -132, py1);
+    ctx.lineTo(132, py1);
+    ctx.bezierCurveTo(142, py1 - 34, 140, py0 + 30, 96, py0);
+    ctx.closePath();
+    const pg = ctx.createLinearGradient(-130, py0, 130, py1);
+    pg.addColorStop(0, dark); pg.addColorStop(0.45, shade(lite, 0.05)); pg.addColorStop(1, dark);
+    ctx.fillStyle = pg; ctx.fill();
+    ctx.lineWidth = 4; ctx.strokeStyle = rgba(shade(dark, -0.5), 0.8); ctx.stroke();
+
+    // ── head
+    const hy = 196 + lift;
+    ctx.beginPath(); ctx.ellipse(0, hy + 34, 74, 46, 0, 0, 7);
+    ctx.fillStyle = shade(dark, -0.12); ctx.fill();
+    ctx.lineWidth = 3.5; ctx.strokeStyle = rgba(shade(dark, -0.6), 0.8); ctx.stroke();
+
+    // eyes
+    for (let s = -1; s <= 1; s += 2) {
+        ctx.beginPath(); ctx.ellipse(s * 56, hy + 30, 15, 11, s * 0.4, 0, 7);
+        ctx.fillStyle = rgba('#0a0a0c', 0.92); ctx.fill();
+        ctx.beginPath(); ctx.arc(s * 52, hy + 26, 3.4, 0, 7);
+        ctx.fillStyle = 'rgba(255,255,255,.5)'; ctx.fill();
+    }
+
+    // mandibles
+    for (let s = -1; s <= 1; s += 2) {
+        ctx.beginPath();
+        ctx.moveTo(s * 40, hy + 14);
+        ctx.quadraticCurveTo(s * 70, hy - 34, s * 26, hy - 62);
+        ctx.lineWidth = 13; ctx.strokeStyle = shade(dark, -0.25); ctx.lineCap = 'round';
+        ctx.stroke();
+    }
+
+    // antennae
+    for (let s = -1; s <= 1; s += 2) {
+        ctx.beginPath();
+        ctx.moveTo(s * 62, hy + 18);
+        ctx.quadraticCurveTo(s * 130, hy - 26, s * 150, hy - 92);
+        ctx.lineWidth = 5; ctx.strokeStyle = shade(dark, -0.1); ctx.stroke();
+        ctx.beginPath(); ctx.ellipse(s * 152, hy - 100, 15, 9, s * 0.9, 0, 7);
+        ctx.fillStyle = shade(dark, -0.05); ctx.fill();
+    }
+
+    drawHorn(ctx, t.Horn.value, hy, dark, lite);
+
+    // ── notches: chipped clean out of the shell
+    const nCount = { 'Unmarked': 0, 'One notch': 1, 'Two notches': 2, 'Three notches': 3, 'Countless': 7 }[t.Notch.value];
+    ctx.save();
+    ctx.globalCompositeOperation = 'destination-out';
+    for (let i = 0; i < nCount; i++) {
+        const s = r() < 0.5 ? -1 : 1;
+        const f = 0.22 + r() * 0.66;
+        const y = ey0 + (ey1 - ey0) * f;
+        const edge = EW * (1 - Math.pow(Math.abs(f - 0.42) * 2.1, 2.4) * 0.42);
+        const w = 20 + r() * 30;
+        ctx.beginPath();
+        ctx.moveTo(s * (edge + 12), y - w * 0.6);
+        ctx.lineTo(s * (edge - w), y);
+        ctx.lineTo(s * (edge + 12), y + w * 0.6);
+        ctx.closePath(); ctx.fill();
+    }
+    ctx.restore();
+    ctx.restore();
+}
+
+function paintShell(ctx, kind, s, EW, y0, y1, dark, lite, r) {
+    ctx.lineCap = 'butt';
+    if (kind === 'Plain Striae') {
+        ctx.strokeStyle = rgba(shade(dark, -0.4), 0.55); ctx.lineWidth = 3;
+        for (let i = 1; i <= 6; i++) {
+            const x = s * EW * (i / 7);
+            ctx.beginPath(); ctx.moveTo(x, y0 + 14); ctx.lineTo(x * 0.72, y1 - 12); ctx.stroke();
+        }
+    } else if (kind === 'Chevron') {
+        ctx.strokeStyle = rgba(shade(dark, -0.45), 0.75); ctx.lineWidth = 15;
+        for (let i = 0; i < 5; i++) {
+            const y = y0 + 56 + i * 88;
+            ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(s * EW, y - 54); ctx.stroke();
+        }
+    } else if (kind === 'Spotted') {
+        ctx.fillStyle = rgba(shade(dark, -0.45), 0.8);
+        for (let i = 0; i < 16; i++) {
+            const x = s * r() * EW * 0.92, y = y0 + 24 + r() * (y1 - y0 - 44);
+            ctx.beginPath(); ctx.ellipse(x, y, 10 + r() * 15, 8 + r() * 12, 0, 0, 7); ctx.fill();
+        }
+    } else if (kind === 'Banded') {
+        ctx.fillStyle = rgba(shade(dark, -0.4), 0.8);
+        for (let i = 0; i < 3; i++) {
+            const y = y0 + 66 + i * 132;
+            ctx.fillRect(Math.min(0, s * EW), y, EW, 46);
+        }
+    } else if (kind === 'Marbled') {
+        ctx.strokeStyle = rgba(shade(lite, 0.35), 0.5); ctx.lineWidth = 9;
+        for (let i = 0; i < 9; i++) {
+            const y = y0 + 20 + r() * (y1 - y0 - 40);
+            ctx.beginPath(); ctx.moveTo(0, y);
+            ctx.bezierCurveTo(s * EW * 0.4, y - 40 + r() * 80, s * EW * 0.65, y + 40 - r() * 80, s * EW, y + 20 - r() * 40);
+            ctx.stroke();
+        }
+    } else if (kind === 'Oilslick') {
+        ctx.save();
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.globalAlpha = 0.42;
+        const g = ctx.createLinearGradient(0, y0, s * EW, y1);
+        ['#12294d', '#0e4a3c', '#463f0e', '#431635', '#171240'].forEach(function (c, i, a) {
+            g.addColorStop(i / (a.length - 1), rgba(c, 1));
+        });
+        ctx.fillStyle = g;
+        ctx.fillRect(Math.min(0, s * EW), y0, EW, y1 - y0);
+        ctx.restore();
+    }
+}
+
+function drawHorn(ctx, kind, hy, dark, lite) {
+    if (kind === 'Hornless') return;
+    ctx.lineCap = 'round';
+    ctx.strokeStyle = shade(dark, -0.2);
+    ctx.fillStyle = shade(dark, -0.15);
+    const base = hy + 2;
+
+    function spike(x0, y0, x1, y1, w) {
+        ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1);
+        ctx.lineWidth = w; ctx.stroke();
+    }
+
+    if (kind === 'Single Spike') {
+        ctx.beginPath();
+        ctx.moveTo(-26, base); ctx.quadraticCurveTo(-14, base - 120, 0, base - 168);
+        ctx.quadraticCurveTo(14, base - 120, 26, base); ctx.closePath(); ctx.fill();
+    } else if (kind === 'Forked Halberd') {
+        ctx.beginPath();
+        ctx.moveTo(-28, base); ctx.quadraticCurveTo(-16, base - 90, -10, base - 120);
+        ctx.lineTo(-46, base - 188); ctx.lineTo(-4, base - 142); ctx.lineTo(0, base - 196);
+        ctx.lineTo(4, base - 142); ctx.lineTo(46, base - 188); ctx.lineTo(10, base - 120);
+        ctx.quadraticCurveTo(16, base - 90, 28, base); ctx.closePath(); ctx.fill();
+    } else if (kind === 'Pincer') {
+        for (let s = -1; s <= 1; s += 2) {
+            ctx.beginPath();
+            ctx.moveTo(s * 46, base);
+            ctx.bezierCurveTo(s * 92, base - 70, s * 74, base - 158, s * 16, base - 176);
+            ctx.lineWidth = 18; ctx.stroke();
+        }
+    } else if (kind === 'Antler') {
+        ctx.beginPath();
+        ctx.moveTo(-22, base); ctx.quadraticCurveTo(-10, base - 110, 0, base - 176);
+        ctx.quadraticCurveTo(10, base - 110, 22, base); ctx.closePath(); ctx.fill();
+        for (let s = -1; s <= 1; s += 2) {
+            spike(s * 8, base - 66, s * 74, base - 110, 13);
+            spike(s * 5, base - 122, s * 52, base - 168, 10);
+        }
+    } else if (kind === 'Crown') {
+        for (let i = -2; i <= 2; i++) {
+            const h = 96 + (2 - Math.abs(i)) * 46;
+            spike(i * 30, base, i * 40, base - h, 15 - Math.abs(i) * 1.6);
+        }
+    }
+}
+</script>
+<script>
+/* ── 2 · HALL OF FACES — the worn second ─────────────────────────── */
+
+const TINCTURES = {
+    'Iron & Bone':    ['#5f666f', '#ded5c2'], 'Blood & Ash':  ['#7d2b26', '#cdc4b8'],
+    'Moss & Gold':    ['#37543a', '#c8a02e'], 'Slate & Rose': ['#454f5e', '#c58a92'],
+    'Sable & Silver': ['#171a1f', '#aeb6bf'], 'Untinctured':  ['#252a32', '#39404a']
+};
+
+function shieldPath(ctx) {
+    ctx.beginPath();
+    ctx.moveTo(-322, 152);
+    ctx.lineTo(322, 152);
+    ctx.lineTo(322, 520);
+    ctx.quadraticCurveTo(322, 762, 0, 884);
+    ctx.quadraticCurveTo(-322, 762, -322, 520);
+    ctx.closePath();
+}
+
+function drawWarden(ctx, spec) {
+    const t = spec.traits;
+    const tinct = TINCTURES[t.Tincture.value];
+    const A = tinct[0], B = tinct[1];
+
+    ctx.save();
+    ctx.translate(500, 30);
+
+    // ── the field
+    ctx.save();
+    shieldPath(ctx); ctx.clip();
+    ctx.fillStyle = A; ctx.fillRect(-330, 140, 660, 760);
+    ctx.fillStyle = B;
+    const div = t.Field.value;
+    if (div === 'Per Pale') ctx.fillRect(0, 140, 330, 760);
+    else if (div === 'Per Fess') ctx.fillRect(-330, 518, 660, 400);
+    else if (div === 'Quarterly') { ctx.fillRect(-330, 140, 330, 378); ctx.fillRect(0, 518, 330, 400); }
+    else if (div === 'Per Bend') {
+        ctx.beginPath(); ctx.moveTo(-330, 140); ctx.lineTo(330, 900); ctx.lineTo(330, 140); ctx.closePath(); ctx.fill();
+    } else if (div === 'Saltire') {
+        ctx.lineWidth = 118; ctx.strokeStyle = B;
+        ctx.beginPath(); ctx.moveTo(-330, 140); ctx.lineTo(330, 900);
+        ctx.moveTo(330, 140); ctx.lineTo(-330, 900); ctx.stroke();
+    }
+
+    // charge
+    const chargeFill = div === 'Plain' ? B : shade(B, 0.26);
+    drawCharge(ctx, t.Charge.value, -218, 402, 80, chargeFill, A);
+    drawCharge(ctx, t.Charge.value,  218, 402, 80, chargeFill, A);
+    drawCharge(ctx, t.Charge.value,    0, 782, 74, chargeFill, A);
+
+    // field shading
+    const fg = ctx.createLinearGradient(-320, 150, 320, 880);
+    fg.addColorStop(0, 'rgba(255,255,255,.09)');
+    fg.addColorStop(0.5, 'rgba(0,0,0,0)');
+    fg.addColorStop(1, 'rgba(0,0,0,.4)');
+    ctx.fillStyle = fg; ctx.fillRect(-330, 140, 660, 760);
+    ctx.restore();
+
+    shieldPath(ctx);
+    ctx.lineWidth = 7; ctx.strokeStyle = rgba('#c8a02e', 0.55); ctx.stroke();
+    ctx.lineWidth = 2; ctx.strokeStyle = rgba('#000000', 0.5); ctx.stroke();
+
+    // ── the helm
+    const form = t.Helm.value;
+    const P = {
+        'Round Sallet': { w: 148, ty: 300, by: 606, round: 148, chin: 46, flare: 16 },
+        'Tall Barbute': { w: 132, ty: 246, by: 624, round: 132, chin: 30, flare: 8 },
+        'Beaked':       { w: 140, ty: 286, by: 620, round: 120, chin: 70, flare: 12 },
+        'Frog-mouth':   { w: 156, ty: 312, by: 596, round: 44,  chin: 8,  flare: 22 },
+        'Doubled':      { w: 146, ty: 288, by: 618, round: 110, chin: 40, flare: 14 },
+        'Faceless':     { w: 142, ty: 292, by: 610, round: 142, chin: 58, flare: 10 }
+    }[form];
+
+    drawCrest(ctx, t.Crest.value, P, B);
+
+    // gorget beneath
+    ctx.save();
+    for (let i = 0; i < 3; i++) {
+        ctx.beginPath();
+        ctx.ellipse(0, P.by + 26 + i * 34, P.w + 34 + i * 30, 34, 0, Math.PI, 2 * Math.PI);
+        ctx.fillStyle = shade('#5b636d', -0.15 - i * 0.12); ctx.fill();
+        ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(0,0,0,.45)'; ctx.stroke();
+    }
+    ctx.restore();
+
+    function helmPath() {
+        ctx.beginPath();
+        ctx.moveTo(-P.w - P.flare, P.by);
+        ctx.lineTo(-P.w, P.ty + P.round);
+        ctx.quadraticCurveTo(-P.w, P.ty, 0, P.ty);
+        ctx.quadraticCurveTo(P.w, P.ty, P.w, P.ty + P.round);
+        ctx.lineTo(P.w + P.flare, P.by);
+        ctx.quadraticCurveTo(0, P.by + P.chin, -P.w - P.flare, P.by);
+        ctx.closePath();
+    }
+
+    helmPath();
+    const hg = ctx.createLinearGradient(-P.w, P.ty, P.w, P.by);
+    hg.addColorStop(0, '#3f464e');
+    hg.addColorStop(0.34, '#9aa3ad');
+    hg.addColorStop(0.52, '#d5dbe1');
+    hg.addColorStop(0.74, '#79818b');
+    hg.addColorStop(1, '#33383f');
+    ctx.fillStyle = hg; ctx.fill();
+    ctx.lineWidth = 5; ctx.strokeStyle = 'rgba(10,12,16,.75)'; ctx.stroke();
+
+    // form detailing
+    ctx.save();
+    helmPath(); ctx.clip();
+    if (form === 'Beaked') {
+        ctx.beginPath();
+        ctx.moveTo(0, P.ty + 10); ctx.lineTo(-30, P.by + P.chin - 14); ctx.lineTo(30, P.by + P.chin - 14);
+        ctx.closePath();
+        ctx.fillStyle = 'rgba(255,255,255,.22)'; ctx.fill();
+        ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(0,0,0,.4)'; ctx.stroke();
+    }
+    if (form === 'Frog-mouth') {
+        ctx.fillStyle = 'rgba(0,0,0,.28)';
+        ctx.fillRect(-P.w - 20, P.ty + 118, (P.w + 20) * 2, 200);
+    }
+    // rivets
+    ctx.fillStyle = 'rgba(20,24,30,.6)';
+    for (let i = -2; i <= 2; i++) {
+        ctx.beginPath(); ctx.arc(i * (P.w * 0.42), P.by - 16, 6, 0, 7); ctx.fill();
+    }
+    ctx.restore();
+
+    drawVisor(ctx, t.Visor.value, P, form);
+    ctx.restore();
+}
+
+function drawCharge(ctx, kind, cx, cy, R, fill, line) {
+    if (kind === 'Nothing') return;
+    ctx.save();
+    ctx.fillStyle = fill;
+    ctx.strokeStyle = rgba('#000000', 0.35);
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    if (kind === 'Mullet') {
+        for (let i = 0; i < 10; i++) {
+            const a = -Math.PI / 2 + i * Math.PI / 5, rr = i % 2 ? R * 0.42 : R;
+            ctx[i ? 'lineTo' : 'moveTo'](cx + Math.cos(a) * rr, cy + Math.sin(a) * rr);
+        }
+        ctx.closePath();
+    } else if (kind === 'Lozenge') {
+        ctx.moveTo(cx, cy - R); ctx.lineTo(cx + R * 0.66, cy); ctx.lineTo(cx, cy + R); ctx.lineTo(cx - R * 0.66, cy); ctx.closePath();
+    } else if (kind === 'Cross') {
+        const a = R * 0.31;
+        ctx.rect(cx - a, cy - R, a * 2, R * 2); ctx.rect(cx - R, cy - a, R * 2, a * 2);
+    } else if (kind === 'Chevron') {
+        ctx.moveTo(cx - R, cy + R * 0.5); ctx.lineTo(cx, cy - R * 0.6); ctx.lineTo(cx + R, cy + R * 0.5);
+        ctx.lineTo(cx + R, cy + R * 0.95); ctx.lineTo(cx, cy - R * 0.15); ctx.lineTo(cx - R, cy + R * 0.95);
+        ctx.closePath();
+    } else if (kind === 'Annulet') {
+        ctx.arc(cx, cy, R * 0.86, 0, 7);
+        ctx.arc(cx, cy, R * 0.58, 0, 7, true);
+    }
+    ctx.fill('evenodd'); ctx.stroke();
+    ctx.restore();
+}
+
+function drawVisor(ctx, kind, P, form) {
+    if (kind === 'Blind') return;
+    const cy = P.ty + P.round * 0.78 + 84;
+    ctx.save();
+    ctx.fillStyle = 'rgba(6,8,11,.92)';
+    if (kind === 'Single Slit') {
+        ctx.fillRect(-P.w * 0.78, cy, P.w * 1.56, 22);
+    } else if (kind === 'Cross Slit') {
+        ctx.fillRect(-P.w * 0.78, cy, P.w * 1.56, 20);
+        ctx.fillRect(-11, cy - 46, 22, 150);
+    } else if (kind === 'Grille') {
+        ctx.fillRect(-P.w * 0.72, cy - 26, P.w * 1.44, 128);
+        ctx.fillStyle = 'rgba(190,198,206,.75)';
+        for (let i = -3; i <= 3; i++) ctx.fillRect(i * (P.w * 0.2) - 5, cy - 26, 10, 128);
+    } else if (kind === 'Open') {
+        ctx.beginPath();
+        ctx.ellipse(0, cy + 42, P.w * 0.72, 86, 0, 0, 7);
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(215,221,227,.5)'; ctx.lineWidth = 6; ctx.stroke();
+    }
+    ctx.restore();
+}
+
+function drawCrest(ctx, kind, P, tint) {
+    if (kind === 'None') return;
+    const top = P.ty;
+    ctx.save();
+    ctx.lineCap = 'round';
+    if (kind === 'Comb') {
+        ctx.beginPath();
+        ctx.moveTo(-P.w * 0.82, top + 42);
+        ctx.quadraticCurveTo(0, top - 92, P.w * 0.82, top + 42);
+        ctx.quadraticCurveTo(0, top - 34, -P.w * 0.82, top + 42);
+        ctx.closePath();
+        ctx.fillStyle = '#9aa3ad'; ctx.fill();
+        ctx.lineWidth = 4; ctx.strokeStyle = 'rgba(10,12,16,.7)'; ctx.stroke();
+    } else if (kind === 'Spike') {
+        ctx.beginPath();
+        ctx.moveTo(-22, top + 20); ctx.lineTo(0, top - 168); ctx.lineTo(22, top + 20); ctx.closePath();
+        ctx.fillStyle = '#b6bec7'; ctx.fill();
+        ctx.lineWidth = 4; ctx.strokeStyle = 'rgba(10,12,16,.7)'; ctx.stroke();
+    } else if (kind === 'Plume') {
+        for (let i = -3; i <= 3; i++) {
+            ctx.beginPath();
+            ctx.moveTo(0, top + 14);
+            ctx.quadraticCurveTo(i * 46, top - 96, i * 74, top - 150 + Math.abs(i) * 26);
+            ctx.lineWidth = 15 - Math.abs(i) * 1.6;
+            ctx.strokeStyle = rgba(tint, 0.9 - Math.abs(i) * 0.08);
+            ctx.stroke();
+        }
+    } else if (kind === 'Wing') {
+        for (let s = -1; s <= 1; s += 2) {
+            ctx.beginPath();
+            ctx.moveTo(s * (P.w - 20), top + 76);
+            ctx.quadraticCurveTo(s * (P.w + 130), top - 40, s * (P.w + 96), top - 148);
+            ctx.quadraticCurveTo(s * (P.w + 34), top - 60, s * (P.w - 30), top + 30);
+            ctx.closePath();
+            ctx.fillStyle = rgba(tint, 0.85); ctx.fill();
+            ctx.lineWidth = 3.5; ctx.strokeStyle = 'rgba(10,12,16,.6)'; ctx.stroke();
+        }
+    } else if (kind === 'Antlers') {
+        ctx.strokeStyle = '#c3b391'; ctx.lineWidth = 12;
+        for (let s = -1; s <= 1; s += 2) {
+            ctx.beginPath();
+            ctx.moveTo(s * 24, top + 26);
+            ctx.quadraticCurveTo(s * 96, top - 40, s * 84, top - 158);
+            ctx.stroke();
+            ctx.lineWidth = 8;
+            ctx.beginPath(); ctx.moveTo(s * 74, top - 46); ctx.lineTo(s * 148, top - 78); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(s * 84, top - 106); ctx.lineTo(s * 142, top - 158); ctx.stroke();
+            ctx.lineWidth = 12;
+        }
+    }
+    ctx.restore();
+}
+</script>
+<script>
+/* ── 3 · HALL OF HOURS — the wound second ────────────────────────── */
+
+const CASINGS = {
+    'Sheet Brass':   { fill: '#a8842a', edge: '#6b5316', open: 0.64, glass: 0 },
+    'Riveted Iron':  { fill: '#4a525c', edge: '#242a31', open: 0.58, glass: 0, rivets: 1 },
+    'Lacquered':     { fill: '#6e2723', edge: '#38110f', open: 0.55, glass: 0, gloss: 1 },
+    'Skeleton':      { fill: null,      edge: '#8a6f27', open: 1,    glass: 0 },
+    'Glass-fronted': { fill: '#93a6ad', edge: '#5c6f76', open: 0.88, glass: 0.28 },
+    'Unhoused':      { fill: null,      edge: null,      open: 1,    glass: 0 }
+};
+
+function drawGear(ctx, cx, cy, R, teeth, color, spokes) {
+    const inner = R * 0.78;
+    ctx.save();
+    ctx.beginPath();
+    for (let i = 0; i < teeth; i++) {
+        const a0 = (i / teeth) * Math.PI * 2, step = (Math.PI * 2 / teeth) * 0.5;
+        ctx.lineTo(cx + Math.cos(a0) * R, cy + Math.sin(a0) * R);
+        ctx.lineTo(cx + Math.cos(a0 + step * 0.62) * R, cy + Math.sin(a0 + step * 0.62) * R);
+        ctx.lineTo(cx + Math.cos(a0 + step) * inner, cy + Math.sin(a0 + step) * inner);
+        ctx.lineTo(cx + Math.cos(a0 + step * 1.9) * inner, cy + Math.sin(a0 + step * 1.9) * inner);
+    }
+    ctx.closePath();
+    const g = ctx.createLinearGradient(cx - R, cy - R, cx + R, cy + R);
+    g.addColorStop(0, shade(color, 0.3)); g.addColorStop(0.5, color); g.addColorStop(1, shade(color, -0.4));
+    ctx.fillStyle = g; ctx.fill();
+    ctx.lineWidth = 2.4; ctx.strokeStyle = 'rgba(8,10,14,.6)'; ctx.stroke();
+
+    ctx.lineWidth = R * 0.13; ctx.strokeStyle = shade(color, -0.2);
+    for (let i = 0; i < spokes; i++) {
+        const a = (i / spokes) * Math.PI * 2;
+        ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(cx + Math.cos(a) * inner * 0.86, cy + Math.sin(a) * inner * 0.86); ctx.stroke();
+    }
+    ctx.beginPath(); ctx.arc(cx, cy, R * 0.2, 0, 7);
+    ctx.fillStyle = shade(color, -0.55); ctx.fill();
+    ctx.restore();
+}
+
+function drawAutomaton(ctx, spec) {
+    const t = spec.traits;
+    const r = spec.rng(21);
+    const C = CASINGS[t.Casing.value];
+    const brass = '#b8912f', iron = '#68727d';
+
+    ctx.save();
+    ctx.translate(500, 30);
+
+    // faint plate grid — a drawing, not a photograph
+    ctx.save();
+    ctx.strokeStyle = 'rgba(200,160,46,.07)'; ctx.lineWidth = 1.6;
+    for (let i = -4; i <= 4; i++) {
+        ctx.beginPath(); ctx.moveTo(i * 108, 60); ctx.lineTo(i * 108, 900); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(-460, 100 + (i + 4) * 100); ctx.lineTo(460, 100 + (i + 4) * 100); ctx.stroke();
+    }
+    ctx.restore();
+
+    const nWheels = { 'Four Wheels': 4, 'Five Wheels': 5, 'Six Wheels': 6, 'Compound': 7, 'Doubled Train': 9 }[t.Train.value];
+    const esc = { 'Verge': 11, 'Anchor': 15, 'Deadbeat': 19, 'Detent': 13, 'Grasshopper': 23, 'Unregulated': 7 }[t.Escapement.value];
+    const TW = { 'Sheet Brass': 150, 'Riveted Iron': 164, 'Lacquered': 144, 'Skeleton': 136, 'Glass-fronted': 158, 'Unhoused': 130 }[t.Casing.value];
+    const torsoTop = 288, torsoBot = torsoTop + 244 + nWheels * 17;
+    const HR = 74 + esc * 1.15;
+    const headY = torsoTop - 44 - HR;
+    const elbowY = torsoTop + 150, kneeY = torsoBot + 132, footY = 884;
+    const limb = C.edge ? shade(C.edge, 0.22) : '#68727d';
+
+    // ── limbs, behind the case
+    ctx.lineCap = 'round';
+    for (let s = -1; s <= 1; s += 2) {
+        ctx.strokeStyle = limb;
+        ctx.lineWidth = 30;
+        ctx.beginPath(); ctx.moveTo(s * TW, torsoTop + 34); ctx.lineTo(s * (TW + 108), elbowY); ctx.stroke();
+        ctx.lineWidth = 23;
+        ctx.beginPath(); ctx.moveTo(s * (TW + 108), elbowY); ctx.lineTo(s * (TW + 74), torsoBot + 14); ctx.stroke();
+        ctx.lineWidth = 34;
+        ctx.beginPath(); ctx.moveTo(s * 72, torsoBot - 10); ctx.lineTo(s * 92, kneeY); ctx.stroke();
+        ctx.lineWidth = 26;
+        ctx.beginPath(); ctx.moveTo(s * 92, kneeY); ctx.lineTo(s * 78, footY - 12); ctx.stroke();
+        // joints, hands, feet
+        [[s * TW, torsoTop + 34, 15], [s * (TW + 108), elbowY, 12], [s * 92, kneeY, 14]].forEach(function (j) {
+            ctx.beginPath(); ctx.arc(j[0], j[1], j[2], 0, 7);
+            ctx.fillStyle = brass; ctx.fill();
+            ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(8,10,14,.6)'; ctx.stroke();
+        });
+        ctx.fillStyle = shade(iron, -0.25);
+        ctx.beginPath(); ctx.ellipse(s * (TW + 74), torsoBot + 30, 22, 16, 0, 0, 7); ctx.fill();
+        ctx.beginPath(); ctx.ellipse(s * 86, footY, 44, 17, 0, 0, 7); ctx.fill();
+    }
+
+    // ── the movement (drawn first; the case is a window onto it)
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(-TW + 8, torsoTop + 8, (TW - 8) * 2, torsoBot - torsoTop - 16);
+    ctx.clip();
+
+    ctx.fillStyle = 'rgba(8,11,15,.85)';
+    ctx.fillRect(-TW, torsoTop, TW * 2, torsoBot - torsoTop);
+
+    // mainspring barrel
+    ctx.save();
+    ctx.strokeStyle = shade(brass, -0.1); ctx.lineWidth = 5;
+    ctx.beginPath();
+    for (let a = 0; a < Math.PI * 7; a += 0.16) {
+        const rr = 12 + a * 5.4;
+        ctx.lineTo(-58 + Math.cos(a) * rr, 400 + Math.sin(a) * rr);
+    }
+    ctx.stroke();
+    ctx.beginPath(); ctx.arc(-58, 400, 96, 0, 7);
+    ctx.lineWidth = 4; ctx.strokeStyle = rgba(brass, 0.6); ctx.stroke();
+    ctx.restore();
+
+    // gear train
+    const span = torsoBot - torsoTop - 96;
+    for (let i = 0; i < nWheels; i++) {
+        const R = 32 + ((i * 5 + 2) % 4) * 11;
+        const cx = (i % 2 ? 1 : -1) * (26 + ((i * 3) % 3) * 20) + 22;
+        const cy = torsoTop + 62 + (i + 0.5) * (span / nWheels);
+        drawGear(ctx, cx, cy, R, 9 + ((i * 5) % 8), i % 2 ? brass : shade(brass, -0.26), 4 + (i % 3));
+    }
+    ctx.restore();
+
+    // ── the case
+    if (C.fill || C.edge) {
+        ctx.beginPath();
+        ctx.moveTo(-TW, torsoTop + 26);
+        ctx.quadraticCurveTo(-TW, torsoTop, -TW + 30, torsoTop);
+        ctx.lineTo(TW - 30, torsoTop);
+        ctx.quadraticCurveTo(TW, torsoTop, TW, torsoTop + 26);
+        ctx.lineTo(TW, torsoBot - 26);
+        ctx.quadraticCurveTo(TW, torsoBot, TW - 30, torsoBot);
+        ctx.lineTo(-TW + 30, torsoBot);
+        ctx.quadraticCurveTo(-TW, torsoBot, -TW, torsoBot - 26);
+        ctx.closePath();
+
+        const ow = TW * C.open, oh = (torsoBot - torsoTop) * 0.78, oy = torsoTop + 34;
+        if (C.fill && C.open < 1) {
+            // The window is a hole in the case, not an erasure of the plate —
+            // compositing it away would take the movement with it.
+            ctx.rect(-ow, oy, ow * 2, oh);
+            ctx.save();
+            ctx.globalAlpha = C.glass ? C.glass : 1;
+            const cg = ctx.createLinearGradient(-TW, torsoTop, TW, torsoBot);
+            cg.addColorStop(0, shade(C.fill, 0.22));
+            cg.addColorStop(0.45, C.fill);
+            cg.addColorStop(1, shade(C.fill, -0.4));
+            ctx.fillStyle = cg;
+            ctx.fill('evenodd');
+            ctx.restore();
+            if (C.edge) {
+                ctx.lineWidth = 5; ctx.strokeStyle = shade(C.edge, 0.25);
+                ctx.strokeRect(-ow, oy, ow * 2, oh);
+            }
+        }
+        if (C.edge) {
+            ctx.beginPath();
+            ctx.moveTo(-TW, torsoTop + 26);
+            ctx.quadraticCurveTo(-TW, torsoTop, -TW + 30, torsoTop);
+            ctx.lineTo(TW - 30, torsoTop);
+            ctx.quadraticCurveTo(TW, torsoTop, TW, torsoTop + 26);
+            ctx.lineTo(TW, torsoBot - 26);
+            ctx.quadraticCurveTo(TW, torsoBot, TW - 30, torsoBot);
+            ctx.lineTo(-TW + 30, torsoBot);
+            ctx.quadraticCurveTo(-TW, torsoBot, -TW, torsoBot - 26);
+            ctx.closePath();
+            ctx.lineWidth = 7; ctx.strokeStyle = C.edge; ctx.stroke();
+        }
+        if (C.gloss) {
+            ctx.save(); ctx.beginPath();
+            ctx.moveTo(-TW + 16, torsoTop + 14); ctx.lineTo(-TW + 54, torsoTop + 14);
+            ctx.lineTo(-TW + 26, torsoBot - 14); ctx.lineTo(-TW + 8, torsoBot - 14); ctx.closePath();
+            ctx.fillStyle = 'rgba(255,255,255,.13)'; ctx.fill(); ctx.restore();
+        }
+        if (C.rivets) {
+            ctx.fillStyle = shade(C.edge, 0.3);
+            for (let i = 0; i < 9; i++) {
+                ctx.beginPath(); ctx.arc(-TW + 11, torsoTop + 22 + i * 35, 5.4, 0, 7); ctx.fill();
+                ctx.beginPath(); ctx.arc(TW - 11, torsoTop + 22 + i * 35, 5.4, 0, 7); ctx.fill();
+            }
+        }
+    }
+
+    // ── escapement, above the case
+    drawGear(ctx, 0, torsoTop - 6, 52, esc, shade(brass, 0.16), 5);
+    ctx.strokeStyle = '#d3dae1'; ctx.lineWidth = 9; ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(-72, torsoTop - 62); ctx.lineTo(0, torsoTop - 40); ctx.lineTo(72, torsoTop - 62);
+    ctx.stroke();
+
+    // ── the dial head
+    ctx.beginPath(); ctx.arc(0, headY, HR, 0, 7);
+    const dg = ctx.createLinearGradient(-HR, headY - HR, HR, headY + HR);
+    dg.addColorStop(0, '#e6e0cd'); dg.addColorStop(1, '#a8a08a');
+    ctx.fillStyle = dg; ctx.fill();
+    ctx.lineWidth = 10; ctx.strokeStyle = brass; ctx.stroke();
+    ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(8,10,14,.5)'; ctx.stroke();
+
+    ctx.strokeStyle = '#31343a';
+    for (let i = 0; i < 12; i++) {
+        const a = i * Math.PI / 6, r0 = HR * (i % 3 ? 0.79 : 0.69);
+        ctx.lineWidth = i % 3 ? 3 : 6;
+        ctx.beginPath();
+        ctx.moveTo(Math.sin(a) * r0, headY - Math.cos(a) * r0);
+        ctx.lineTo(Math.sin(a) * HR * 0.9, headY - Math.cos(a) * HR * 0.9);
+        ctx.stroke();
+    }
+    const ha = r() * Math.PI * 2, ma = r() * Math.PI * 2;
+    ctx.lineCap = 'round'; ctx.strokeStyle = '#22252a';
+    ctx.lineWidth = 9; ctx.beginPath(); ctx.moveTo(0, headY); ctx.lineTo(Math.sin(ha) * HR * 0.48, headY - Math.cos(ha) * HR * 0.48); ctx.stroke();
+    ctx.lineWidth = 6; ctx.beginPath(); ctx.moveTo(0, headY); ctx.lineTo(Math.sin(ma) * HR * 0.77, headY - Math.cos(ma) * HR * 0.77); ctx.stroke();
+    ctx.beginPath(); ctx.arc(0, headY, 8, 0, 7); ctx.fillStyle = brass; ctx.fill();
+
+    drawWinder(ctx, t.Winder.value, TW, torsoTop, torsoBot, brass);
+    drawComplication(ctx, t.Complication.value, TW, torsoTop, torsoBot, brass, r, headY, HR);
+
+    // ── wear
+    const wear = { 'Factory Bright': 0, 'Handled': 8, 'Worn': 20, 'Pitted': 44, 'Salvaged': 60 }[t.Wear.value];
+    ctx.save();
+    for (let i = 0; i < wear; i++) {
+        const x = -TW + r() * TW * 2, y = torsoTop + r() * (torsoBot - torsoTop);
+        ctx.globalAlpha = 0.1 + r() * 0.3;
+        if (i % 3) {
+            ctx.fillStyle = '#0a0c10';
+            ctx.beginPath(); ctx.arc(x, y, 1.6 + r() * 4, 0, 7); ctx.fill();
+        } else {
+            ctx.strokeStyle = 'rgba(230,230,220,.5)'; ctx.lineWidth = 1.6;
+            ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + 12 - r() * 30, y + 8 - r() * 20); ctx.stroke();
+        }
+    }
+    ctx.restore();
+    ctx.restore();
+}
+
+function drawWinder(ctx, kind, TW, top, bot, brass) {
+    ctx.save();
+    ctx.strokeStyle = brass; ctx.fillStyle = brass; ctx.lineCap = 'round';
+    const y = (top + bot) / 2;
+    if (kind === 'Side Key') {
+        ctx.lineWidth = 13;
+        ctx.beginPath(); ctx.moveTo(TW, y); ctx.lineTo(TW + 66, y); ctx.stroke();
+        ctx.lineWidth = 11;
+        ctx.beginPath(); ctx.moveTo(TW + 66, y - 30); ctx.lineTo(TW + 66, y + 30); ctx.stroke();
+    } else if (kind === 'Crown') {
+        ctx.lineWidth = 12;
+        ctx.beginPath(); ctx.moveTo(TW, y - 60); ctx.lineTo(TW + 40, y - 60); ctx.stroke();
+        drawGear(ctx, TW + 62, y - 60, 30, 12, brass, 0);
+    } else if (kind === 'Fusee Chain') {
+        drawGear(ctx, TW + 54, y - 40, 34, 13, brass, 4);
+        ctx.lineWidth = 4; ctx.strokeStyle = shade(brass, -0.3);
+        ctx.beginPath();
+        for (let i = 0; i < 22; i++) ctx.lineTo(TW + 54 - i * 4.6, y - 6 + Math.sin(i * 1.4) * 5 + i * 3.4);
+        ctx.stroke();
+    } else if (kind === 'Weight & Cord') {
+        ctx.lineWidth = 3.4; ctx.strokeStyle = shade(brass, -0.2);
+        ctx.beginPath(); ctx.moveTo(TW + 44, top + 10); ctx.lineTo(TW + 44, bot + 96); ctx.stroke();
+        ctx.beginPath(); ctx.ellipse(TW + 44, bot + 126, 22, 34, 0, 0, 7);
+        ctx.fillStyle = shade(brass, -0.35); ctx.fill();
+        ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(8,10,14,.6)'; ctx.stroke();
+    } else if (kind === 'Sealed') {
+        ctx.beginPath(); ctx.arc(TW - 34, y, 26, 0, 7);
+        ctx.fillStyle = shade(brass, -0.45); ctx.fill();
+        ctx.lineWidth = 5; ctx.strokeStyle = shade(brass, -0.1); ctx.stroke();
+        ctx.lineWidth = 6; ctx.strokeStyle = shade(brass, 0.2);
+        ctx.beginPath(); ctx.moveTo(TW - 50, y - 14); ctx.lineTo(TW - 18, y + 14); ctx.stroke();
+    }
+    ctx.restore();
+}
+
+function drawComplication(ctx, kind, TW, top, bot, brass, r, headY, HR) {
+    if (kind === 'None') return;
+    ctx.save();
+    if (kind === 'Striking') {
+        ctx.beginPath();
+        ctx.moveTo(-TW - 78, 300); ctx.quadraticCurveTo(-TW - 78, 232, -TW - 30, 232);
+        ctx.quadraticCurveTo(-TW + 18, 232, -TW + 18, 300); ctx.closePath();
+        ctx.fillStyle = shade(brass, -0.15); ctx.fill();
+        ctx.lineWidth = 4; ctx.strokeStyle = 'rgba(8,10,14,.6)'; ctx.stroke();
+        ctx.beginPath(); ctx.arc(-TW - 30, 306, 9, 0, 7); ctx.fillStyle = brass; ctx.fill();
+    } else if (kind === 'Calendar') {
+        ctx.beginPath(); ctx.rect(-46, headY + HR * 0.34, 92, 40);
+        ctx.fillStyle = '#1a1d22'; ctx.fill();
+        ctx.lineWidth = 4; ctx.strokeStyle = brass; ctx.stroke();
+        ctx.fillStyle = '#e6e0cd'; ctx.font = '600 26px "IBM Plex Mono", monospace'; ctx.textAlign = 'center';
+        ctx.fillText(String(1 + Math.floor(r() * 31)), 0, headY + HR * 0.34 + 30);
+    } else if (kind === 'Repeating') {
+        ctx.strokeStyle = rgba(brass, 0.7); ctx.lineWidth = 3.5;
+        for (let i = 1; i <= 3; i++) {
+            ctx.beginPath(); ctx.arc(TW + 14, 260, 26 + i * 22, -0.9, 0.9); ctx.stroke();
+        }
+    } else if (kind === 'Orrery') {
+        ctx.strokeStyle = rgba(brass, 0.55); ctx.lineWidth = 3;
+        for (let i = 1; i <= 3; i++) {
+            const rr = HR * 1.3 + i * 34;
+            ctx.beginPath(); ctx.ellipse(0, headY, rr, rr * 0.34, 0, 0, 7); ctx.stroke();
+            const a = r() * 7;
+            ctx.beginPath(); ctx.arc(Math.cos(a) * rr, headY + Math.sin(a) * rr * 0.34, 7, 0, 7);
+            ctx.fillStyle = brass; ctx.fill();
+        }
+    } else if (kind === 'Unlisted') {
+        ctx.strokeStyle = rgba('#c2603f', 0.8); ctx.lineWidth = 5;
+        ctx.beginPath(); ctx.arc(-TW - 44, 470, 34, 0, 7); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(-TW - 66, 448); ctx.lineTo(-TW - 22, 492); ctx.stroke();
+    }
+    ctx.restore();
+}
+</script>
+<script>
+/* ── 4 · HALL OF DISTANCES — the named second ────────────────────── */
+
+const ASTERISMS = {
+    'The Ladder':      [[.28,.10],[.72,.20],[.28,.38],[.72,.48],[.28,.66],[.72,.76],[.30,.92]],
+    'The Hook':        [[.70,.10],[.74,.34],[.63,.60],[.42,.74],[.24,.64],[.28,.44]],
+    'The Yoke':        [[.12,.16],[.28,.55],[.50,.72],[.72,.55],[.88,.16]],
+    'The Scythe':      [[.18,.88],[.34,.62],[.50,.42],[.70,.31],[.84,.40],[.86,.60]],
+    'The Lantern':     [[.34,.16],[.66,.16],[.74,.54],[.50,.82],[.26,.54],[.34,.16]],
+    'The Broken Ring': [[.50,.12],[.76,.28],[.84,.58],[.64,.82],[.36,.82],[.18,.56]]
+};
+
+function samplePath(pts, n) {
+    const seg = [];
+    let total = 0;
+    for (let i = 1; i < pts.length; i++) {
+        const d = Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]);
+        seg.push(d); total += d;
+    }
+    const out = [];
+    for (let k = 0; k < n; k++) {
+        let want = (n === 1 ? 0.5 : k / (n - 1)) * total, i = 0;
+        while (i < seg.length - 1 && want > seg[i]) { want -= seg[i]; i++; }
+        const f = seg[i] ? want / seg[i] : 0;
+        out.push([pts[i][0] + (pts[i + 1][0] - pts[i][0]) * f,
+                  pts[i][1] + (pts[i + 1][1] - pts[i][1]) * f]);
+    }
+    return out;
+}
+
+function drawStar(ctx, x, y, mag, tint) {
+    const R = 4 + mag * 18;
+    const g = ctx.createRadialGradient(x, y, 0, x, y, R * 5.5);
+    g.addColorStop(0, rgba(tint, 0.95));
+    g.addColorStop(0.16, rgba(tint, 0.35));
+    g.addColorStop(1, rgba(tint, 0));
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(x, y, R * 5.5, 0, 7); ctx.fill();
+
+    if (mag > 0.55) {                                   // diffraction spikes
+        ctx.save();
+        ctx.strokeStyle = rgba(tint, 0.34 * mag);
+        ctx.lineWidth = 1.6;
+        const L = R * (5 + mag * 7);
+        ctx.beginPath();
+        ctx.moveTo(x - L, y); ctx.lineTo(x + L, y);
+        ctx.moveTo(x, y - L); ctx.lineTo(x, y + L);
+        ctx.stroke();
+        ctx.restore();
+    }
+    ctx.beginPath(); ctx.arc(x, y, R * 0.72, 0, 7);
+    ctx.fillStyle = '#ffffff'; ctx.fill();
+}
+
+function drawStarfigure(ctx, spec) {
+    const t = spec.traits;
+    const r = spec.rng(31);
+    const X0 = 168, X1 = 832, Y0 = 176, Y1 = 792;
+    const map = function (p) { return [X0 + p[0] * (X1 - X0), Y0 + p[1] * (Y1 - Y0)]; };
+
+    ctx.save();
+
+    // ── the field
+    const fog = { 'Empty': 0, 'Dusted': 1, 'Nebulous': 3, 'Clouded': 5, 'Curdled': 8 }[t.Field.value];
+    for (let i = 0; i < fog; i++) {
+        const cx = 140 + r() * 720, cy = 140 + r() * 700, R = 130 + r() * 260;
+        const hue = ['#3f5fa8', '#6a4a9c', '#2f7f86', '#8a4a6a'][Math.floor(r() * 4)];
+        const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, R);
+        g.addColorStop(0, rgba(hue, 0.2));
+        g.addColorStop(0.55, rgba(hue, 0.07));
+        g.addColorStop(1, rgba(hue, 0));
+        ctx.fillStyle = g;
+        ctx.beginPath(); ctx.arc(cx, cy, R, 0, 7); ctx.fill();
+    }
+
+    // background dust
+    ctx.fillStyle = 'rgba(255,255,255,.5)';
+    for (let i = 0; i < 240; i++) {
+        ctx.globalAlpha = 0.08 + r() * 0.3;
+        ctx.fillRect(40 + r() * 920, 60 + r() * 860, 1.5, 1.5);
+    }
+    ctx.globalAlpha = 1;
+
+    // ── the ecliptic
+    const cross = t.Crossing.value;
+    if (cross !== 'Clear of the Ecliptic') {
+        const lift = { 'Grazing': 810, 'Crossed Once': 640, 'Crossed Twice': 500, 'Occulted': 430 }[cross];
+        ctx.save();
+        ctx.setLineDash([13, 11]);
+        ctx.strokeStyle = rgba('#c8a02e', cross === 'Occulted' ? 0.6 : 0.34);
+        ctx.lineWidth = 2.4;
+        ctx.beginPath();
+        ctx.moveTo(40, lift + 70);
+        ctx.quadraticCurveTo(500, lift - 130, 960, lift + 70);
+        ctx.stroke();
+        ctx.restore();
+    }
+
+    // ── the figure
+    const nStars = { 'Five': 5, 'Seven': 7, 'Nine': 9, 'Eleven': 11, 'Thirteen': 13, 'Twenty-one': 21 }[t.Stars.value];
+    const skeleton = ASTERISMS[t.Asterism.value];
+    let pts = samplePath(skeleton, nStars).map(function (p) {
+        return [p[0] + (r() - 0.5) * 0.05, p[1] + (r() - 0.5) * 0.05];
+    });
+    const bx0 = Math.min.apply(null, pts.map(function (p) { return p[0]; }));
+    const bx1 = Math.max.apply(null, pts.map(function (p) { return p[0]; }));
+    const by0 = Math.min.apply(null, pts.map(function (p) { return p[1]; }));
+    const by1 = Math.max.apply(null, pts.map(function (p) { return p[1]; }));
+    const k = Math.min((X1 - X0) / Math.max(0.08, bx1 - bx0), (Y1 - Y0) / Math.max(0.08, by1 - by0));
+    const ox = (X0 + X1) / 2 - ((bx0 + bx1) / 2) * k;
+    const oy = (Y0 + Y1) / 2 - ((by0 + by1) / 2) * k;
+    pts = pts.map(function (p) { return [p[0] * k + ox, p[1] * k + oy]; });
+
+    ctx.strokeStyle = 'rgba(196,214,246,.4)';
+    ctx.lineWidth = 2.2;
+    ctx.beginPath();
+    pts.forEach(function (p, i) { ctx[i ? 'lineTo' : 'moveTo'](p[0], p[1]); });
+    if (t.Asterism.value === 'The Lantern') ctx.closePath();
+    ctx.stroke();
+
+    // magnitudes: one primary, the rest falling away
+    const prim = { 'Faint': 0.45, 'Steady': 0.62, 'Bright': 0.8, 'Blazing': 1, 'Variable': 0.72 }[t.Primary.value];
+    const lead = Math.floor(r() * nStars);
+    const mags = pts.map(function (_, i) { return i === lead ? prim : 0.16 + r() * prim * 0.62; });
+
+    const tint = t.Primary.value === 'Variable' ? '#e8b45c' : '#cfe0ff';
+
+    // doubles
+    const dbl = { 'None': 0, 'One Pair': 1, 'Two Pairs': 2, 'A Triple': 3, 'Unresolved': 4 }[t.Double.value];
+    for (let i = 0; i < dbl; i++) {
+        const j = Math.floor(r() * pts.length);
+        const a = r() * 7, d = 16 + r() * 16;
+        drawStar(ctx, pts[j][0] + Math.cos(a) * d, pts[j][1] + Math.sin(a) * d, mags[j] * 0.6, tint);
+    }
+
+    pts.forEach(function (p, i) { drawStar(ctx, p[0], p[1], mags[i], i === lead ? tint : '#dce8ff'); });
+
+    // designations on the three brightest
+    const order = mags.map(function (m, i) { return [m, i]; }).sort(function (a, b) { return b[0] - a[0]; });
+    const greek = ['α', 'β', 'γ'];
+    ctx.fillStyle = 'rgba(205,220,250,.62)';
+    ctx.font = '300 30px "IBM Plex Sans", sans-serif';
+    ctx.textAlign = 'left';
+    for (let i = 0; i < Math.min(3, order.length); i++) {
+        const p = pts[order[i][1]];
+        ctx.fillText(greek[i], p[0] + 24, p[1] - 16);
+    }
+
+    if (t.Crossing.value === 'Occulted') {
+        ctx.fillStyle = 'rgba(10,13,19,.72)';
+        ctx.beginPath(); ctx.arc(500, 470, 250, 0, 7); ctx.fill();
+    }
+    ctx.restore();
+}
+
+const RENDERERS = { grudges: drawBeetle, faces: drawWarden, hours: drawAutomaton, distances: drawStarfigure };
+
+function renderSpec(canvas, spec) {
+    const ctx = canvas.getContext('2d');
+    const S = canvas.width;
+    ctx.clearRect(0, 0, S, S);
+    ctx.save();
+    ctx.scale(S / 1000, S / 1000);
+    RENDERERS[spec.hall.id](ctx, spec);
+    ctx.restore();
+}
+</script>
+<script>
+/* ── the cabinet ─────────────────────────────────────────────────── */
+
+const state = { hall: 0, serials: [1041, 2277, 318, 904], strips: [[], [], [], []] };
+
+const $ = function (id) { return document.getElementById(id); };
+const plate = $('plate');
+
+function pct(p) {
+    const v = p * 100;
+    return (v >= 10 ? v.toFixed(1) : v.toFixed(2)) + '%';
+}
+
+function buildTabs() {
+    $('halls').innerHTML = HALLS.map(function (h, i) {
+        return '<button class="hall-tab" role="tab" type="button" id="tab-' + i + '"' +
+               ' aria-selected="' + (i === state.hall) + '" style="--tab:' + h.accent + '"' +
+               ' onclick="setHall(' + i + ')">' +
+               '<span class="tab-kind">' + h.kind + '</span>' +
+               '<span class="tab-name">' + h.hall + '</span></button>';
+    }).join('');
+
+    $('legend').innerHTML = HALLS.map(function (h) {
+        return '<div class="legend-item" style="--lc:' + h.accent + '">' +
+               '<div class="legend-name">' + h.hall + '</div>' +
+               '<div class="legend-text">' + h.legend + '</div></div>';
+    }).join('');
+}
+
+function setHall(i) {
+    state.hall = i;
+    document.documentElement.style.setProperty('--hall', HALLS[i].accent);
+    document.documentElement.style.setProperty('--hall-dim', HALLS[i].accent + '33');
+    Array.prototype.forEach.call(document.querySelectorAll('.hall-tab'), function (b, k) {
+        b.setAttribute('aria-selected', String(k === i));
+    });
+    draw();
+}
+
+function setSerial(n) {
+    n = Math.max(1, Math.min(999999, Math.floor(n) || 1));
+    state.serials[state.hall] = n;
+    draw();
+}
+
+function draw(record) {
+    const serial = state.serials[state.hall];
+    const spec = buildSpec(state.hall, serial);
+    renderSpec(plate, spec);
+    $('serial').value = serial;
+    $('plate-serial').textContent = HALLS[state.hall].hall.toUpperCase().replace(/^HALL OF /, '') +
+                                    ' · SERIAL ' + String(serial).padStart(6, '0');
+    renderDossier(spec);
+    if (record !== false) enterInStrip(spec);
+    renderStrip();
+}
+
+function renderDossier(spec) {
+    $('d-kind').textContent = spec.hall.kind + ' · ' + spec.hall.hall;
+    $('d-name').textContent = spec.name;
+    $('d-flavour').textContent = spec.flavour;
+    $('d-marks-label').textContent = spec.hall.marksLabel;
+
+    const badge = $('d-tier');
+    badge.textContent = spec.tier.name;
+    badge.style.color = spec.tier.color;
+    const beat = (1 - spec.rarity) * 100;
+    $('d-odds').innerHTML = 'rarer than ' + (beat >= 99 ? beat.toFixed(1) : Math.round(beat)) +
+        '%<br>of this hall';
+
+    $('d-traits').innerHTML = spec.keys.map(function (k) {
+        const t = spec.traits[k];
+        return '<div class="trait">' +
+               '<span class="trait-key">' + k + '</span>' +
+               '<span class="trait-val">' + t.value + '</span>' +
+               '<span class="trait-pct">' + pct(t.p) + '</span>' +
+               '<span class="trait-bar"><span style="width:' + (t.p * 100).toFixed(1) + '%"></span></span>' +
+               '</div>';
+    }).join('');
+
+    $('d-marks').innerHTML = spec.marks.map(function (m) {
+        let pips = '';
+        for (let i = 1; i <= 20; i++) pips += '<span class="pip' + (i <= m.value ? ' on' : '') + '"></span>';
+        return '<div class="mark"><span class="mark-key">' + m.key + '</span>' +
+               '<span class="mark-num">' + String(m.value).padStart(2, '0') + '</span>' +
+               '<span class="pips">' + pips + '</span></div>';
+    }).join('');
+}
+
+function enterInStrip(spec) {
+    const list = state.strips[state.hall];
+    if (list.indexOf(spec.serial) === -1) list.unshift(spec.serial);
+    if (list.length > 18) list.length = 18;
+}
+
+function renderStrip() {
+    const list = state.strips[state.hall];
+    const grid = $('strip-grid');
+    $('strip-count').textContent = list.length + (list.length === 1 ? ' entered' : ' entered');
+    $('strip-empty').style.display = list.length ? 'none' : '';
+    grid.innerHTML = '';
+    list.forEach(function (serial) {
+        const spec = buildSpec(state.hall, serial);
+        const btn = document.createElement('button');
+        btn.className = 'chip';
+        btn.type = 'button';
+        btn.setAttribute('aria-current', String(serial === state.serials[state.hall]));
+        btn.title = spec.name + ' · serial ' + serial;
+        const c = document.createElement('canvas');
+        c.width = 300; c.height = 300;
+        renderSpec(c, spec);
+        btn.appendChild(c);
+        const foot = document.createElement('div');
+        foot.className = 'chip-foot';
+        foot.innerHTML = '<div class="chip-serial">' + String(serial).padStart(6, '0') + '</div>' +
+                         '<div class="chip-tier" style="color:' + spec.tier.color + '">' + spec.tier.name + '</div>';
+        btn.appendChild(foot);
+        btn.onclick = function () { state.serials[state.hall] = serial; draw(false); };
+        grid.appendChild(btn);
+    });
+}
+
+/* ── saving ──────────────────────────────────────────────────────── */
+
+async function savePlate() {
+    const serial = state.serials[state.hall];
+    const filename = 'second-' + HALLS[state.hall].id + '-' + String(serial).padStart(6, '0') + '.png';
+    const blob = await new Promise(function (res) { plate.toBlob(res, 'image/png'); });
+    const host = window.claude;
+    const api = host && typeof host.use === 'function' ? await host.use('downloads') : null;
+
+    if (!api) {
+        if (host) { flash('Saving is not available in this view.'); return; }
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = filename;
+        document.body.appendChild(a); a.click(); a.remove();
+        setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+        return;
+    }
+    try {
+        await api.save({ filename: filename, data: blob });
+        flash('Plate saved.');
+    } catch (err) {
+        if (err && err.code === 'declined') return;
+        flash('Could not save the plate: ' + ((err && err.message) || 'unknown error'));
+    }
+}
+
+let flashTimer = null;
+function flash(msg) {
+    const el = $('plate-serial');
+    el.textContent = msg;
+    clearTimeout(flashTimer);
+    flashTimer = setTimeout(draw.bind(null, false), 3000);
+}
+
+/* ── boot ────────────────────────────────────────────────────────── */
+
+buildTabs();
+$('prev').onclick = function () { setSerial(state.serials[state.hall] - 1); };
+$('next').onclick = function () { setSerial(state.serials[state.hall] + 1); };
+$('cast').onclick = function () { setSerial(1 + Math.floor(Math.random() * 999999)); };
+$('save').onclick = savePlate;
+$('serial').onchange = function () { setSerial(parseInt(this.value, 10)); };
+setHall(0);
+
+(function () {
+    const worst = CALIB.reduce(function (m, c) { return Math.max(m, c.dev); }, 0);
+    $('colophon').innerHTML =
+        'A serial is the whole specimen. Trait shares are computed from the generator’s own weights, and a ' +
+        'second’s tier is its rank against its hall — the share of seconds at least as unusual — because with ' +
+        'six traits every individual is astronomically unlikely and absolute odds would call everything priceless.<br>' +
+        'Calibrated in this browser on load: ' + SAMPLES.toLocaleString() + ' serials drawn per hall, largest gap ' +
+        'between printed and observed trait share <strong>' + (worst * 100).toFixed(2) + ' percentage points</strong>.';
+})();
+</script>
+</body>
+</html>
