@@ -11,7 +11,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Stillpoint — The Ninth Confirmation</title>
+    <title>Stillpoint</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.7.0/p5.min.js"></script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -318,8 +318,9 @@
         .canvas-area {
             flex: 1;
             display: flex;
+            flex-direction: column;
             align-items: center;
-            justify-content: center;
+            justify-content: flex-start;
             min-width: 0;
         }
 
@@ -337,6 +338,74 @@
             width: 100% !important;
             height: auto !important;
         }
+
+        /* Lore Column */
+        .lore {
+            max-width: 62ch;
+            margin: 0 auto;
+            padding: 64px 8px 40px;
+        }
+
+        .lore .eyebrow {
+            font-size: 11px;
+            font-weight: 600;
+            letter-spacing: 0.17em;
+            text-transform: uppercase;
+            color: var(--anthropic-orange);
+            margin-bottom: 12px;
+        }
+
+        .lore h2 {
+            font-family: 'Lora', Georgia, serif;
+            font-size: 30px;
+            font-weight: 500;
+            line-height: 1.25;
+            text-wrap: balance;
+            margin-bottom: 20px;
+        }
+
+        .lore p {
+            font-family: 'Lora', Georgia, serif;
+            font-size: 16px;
+            line-height: 1.74;
+            color: #3c3a34;
+            margin-bottom: 16px;
+        }
+
+        .lore .rule {
+            height: 1px;
+            background: var(--anthropic-light-gray);
+            margin: 36px 0;
+        }
+
+        .lore blockquote {
+            font-family: 'Lora', Georgia, serif;
+            font-size: 19px;
+            line-height: 1.55;
+            font-style: italic;
+            color: var(--anthropic-dark);
+            border-left: 2px solid var(--anthropic-orange);
+            padding-left: 20px;
+            margin: 28px 0;
+            text-wrap: balance;
+        }
+
+        .lore dl {
+            display: grid;
+            grid-template-columns: max-content 1fr;
+            gap: 10px 20px;
+            font-size: 13px;
+            margin-top: 8px;
+        }
+
+        .lore dt {
+            font-family: 'Courier New', monospace;
+            color: var(--anthropic-mid-gray);
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+        }
+
+        .lore dd { color: #3c3a34; }
 
         /* Loading State */
         .loading {
@@ -543,6 +612,111 @@
         <div class="canvas-area">
             <div id="canvas-container">
                 <div class="loading">Casting the plate…</div>
+            </div>
+
+            <div class="lore">
+                <div class="eyebrow">The Order of the Ninth Confirmation</div>
+                <h2>Kell settles its arguments in bronze, not in words</h2>
+
+                <p>
+                    Kell was a port for two thousand years and then the water left.
+                    Sound carries strangely over the salt flat that remains — a word
+                    spoken at its edge returns eleven seconds later, thinner, and
+                    slightly wrong. The Kellians came to distrust speech early.
+                    Anything can be said, and anything said can be said again by
+                    someone else, in the same voice.
+                </p>
+
+                <p>
+                    So they stopped taking testimony and started taking
+                    <em>settlements</em>. A claim is not written down. It is converted
+                    into a striking pattern, laid onto a thin disc of bell-bronze hung
+                    free on silk threads, dusted with fine ash, and struck. Where the
+                    plate is loud the ash cannot rest; it is thrown, and thrown again,
+                    and hangs in the lamplight as a copper haze. Along the lines where
+                    the plate's own harmonics cancel exactly, the bronze is not moving
+                    at all. The ash finds those lines. It always finds those lines.
+                </p>
+
+                <p>
+                    The figure that stands on the plate ninety seconds later is the
+                    record. No hand drew it and no hand could — it belongs to the
+                    argument between the striking and the bronze, not to either one.
+                </p>
+
+                <div class="rule"></div>
+
+                <p>
+                    One settlement proves nothing, and the Order says so in its first
+                    line: <em>the first figure is a rumour.</em> The Cantor strikes
+                    again, a fraction softer, and again. A true claim converges — each
+                    settlement landing nearer the last until the difference is smaller
+                    than a grain. A false one wanders, finding a different stillness
+                    every time, because there was never a single figure underneath it.
+                    Nine successive agreements and the claim enters the Register.
+                </p>
+
+                <p>
+                    The ash is never wholly cleared between strikes, so a confirmed
+                    plate carries faint, misregistered ghosts of its own earlier
+                    settlements. Kellians consider those the most trustworthy thing on
+                    it. A figure with no ghosts behind it was struck once, by someone
+                    in a hurry, and means nothing.
+                </p>
+
+                <p>
+                    There is no vault in Kell and no guard on the Hall. Each day's
+                    striking patterns are published, taking their opening positions
+                    from the closing figure of the day before, back to the first — one
+                    continuous strike that has been going on for six hundred years. To
+                    insert a false figure you would have to re-strike every plate
+                    since, in order, faster than eleven Halls are striking the true
+                    sequence. They have not stopped. Not for the two plagues, not on
+                    the night the roof came down.
+                </p>
+
+                <p>
+                    The heresy, when it came, came from inside. A Cantor named Ovrin
+                    Sabe argued that the nodal lines are where the plate has nothing
+                    left to say, and that all the power is in the bright violent
+                    places the ash is flung from. His faction stopped reading the
+                    figures and started reading the haze. They were called the Loud.
+                    Bronze deafens at close range in a way that takes years and cannot
+                    be felt happening; by the end the survivors read a struck plate by
+                    pressing their palms to it — which is to say they arrived at the
+                    nodal set anyway, by the longest possible route, and had to be
+                    told what they were touching.
+                </p>
+
+                <div class="rule"></div>
+
+                <p>
+                    At the exact centre of a plate every mode of the bronze is at rest
+                    — not approximately, but always, as a matter of what modes are.
+                    Whatever is struck and whatever settles, the curves converge there
+                    into a small dense knot no wider than a thumbnail. It is the one
+                    mark on every plate the Order has ever filed. They call it the
+                    stillpoint, and the practice is named after it rather than the
+                    other way round.
+                </p>
+
+                <blockquote>
+                    Strike it again. It will tell you the same thing, or it was never
+                    telling you anything.
+                </blockquote>
+
+                <p>
+                    Each plate above is photographed at the moment of its ninth
+                    confirmation.
+                </p>
+
+                <dl>
+                    <dt>Seed</dt><dd>the striking pattern — it fixes the figure completely, now or in six hundred years</dd>
+                    <dt>Black</dt><dd>ash at rest, on the lines where the plate is silent</dd>
+                    <dt>Copper</dt><dd>ash that never got to rest</dd>
+                    <dt>Doubling</dt><dd>the eight earlier settlements, showing through</dd>
+                    <dt>Rim</dt><dd>one tick per confirmation survived</dd>
+                </dl>
             </div>
         </div>
     </div>
