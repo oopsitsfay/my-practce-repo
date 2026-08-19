@@ -1207,7 +1207,39 @@
 
         function regenerate() { initializeSystem(); }
 
-        function downloadPNG() { saveCanvas('stillpoint-plate-' + params.seed, 'png'); }
+        // Opened as a plain file, p5 saves the canvas directly. Inside the
+        // artifact viewer, frame code cannot download — the file is offered to
+        // the viewer through the downloads capability, which they may decline.
+        async function downloadPNG() {
+            const host = window.claude;
+            const api = host && typeof host.use === 'function' ? await host.use('downloads') : null;
+
+            if (!api) {
+                if (host) { note('Saving is not available in this view.'); return; }
+                saveCanvas('stillpoint-plate-' + params.seed, 'png');
+                return;
+            }
+
+            const canvas = document.querySelector('#canvas-container canvas');
+            const blob = await new Promise(function (res) { canvas.toBlob(res, 'image/png'); });
+            try {
+                await api.save({ filename: 'stillpoint-plate-' + params.seed + '.png', data: blob });
+                note('Plate ' + params.seed + ' saved.');
+            } catch (err) {
+                if (err && err.code === 'declined') return;
+                note('Could not save the plate: ' + ((err && err.message) || 'unknown error'));
+            }
+        }
+
+        // transient line in the status box, then back to the plate's own state
+        let noteTimer = null;
+        function note(msg) {
+            const el = document.getElementById('status');
+            if (!el) return;
+            el.textContent = msg;
+            clearTimeout(noteTimer);
+            noteTimer = setTimeout(updateStatus, 4000);
+        }
 
         // ═══════════════════════════════════════════════════════════════════════
         // SEED CONTROL FUNCTIONS
