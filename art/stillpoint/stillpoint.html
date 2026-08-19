@@ -1,0 +1,1092 @@
+<!DOCTYPE html>
+<!--
+    STILLPOINT — a generative Chladni-settlement engine.
+    Built on the algorithmic-art viewer template (Anthropic branding, seed
+    navigation and action structure preserved). Algorithm, parameters and
+    parameter controls are original to this work.
+
+    Philosophy: PHILOSOPHY.md   ·   Lore: LORE.md
+-->
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Stillpoint — The Ninth Confirmation</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.7.0/p5.min.js"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600&family=Lora:wght@400;500&display=swap" rel="stylesheet">
+    <style>
+        /* Anthropic Brand Colors */
+        :root {
+            --anthropic-dark: #141413;
+            --anthropic-light: #faf9f5;
+            --anthropic-mid-gray: #b0aea5;
+            --anthropic-light-gray: #e8e6dc;
+            --anthropic-orange: #d97757;
+            --anthropic-blue: #6a9bcc;
+            --anthropic-green: #788c5d;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Poppins', sans-serif;
+            background: linear-gradient(135deg, var(--anthropic-light) 0%, #f5f3ee 100%);
+            min-height: 100vh;
+            color: var(--anthropic-dark);
+        }
+
+        .container {
+            display: flex;
+            min-height: 100vh;
+            padding: 20px;
+            gap: 20px;
+        }
+
+        /* Sidebar */
+        .sidebar {
+            width: 320px;
+            flex-shrink: 0;
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(10px);
+            padding: 24px;
+            border-radius: 12px;
+            box-shadow: 0 10px 30px rgba(20, 20, 19, 0.1);
+            overflow-y: auto;
+            overflow-x: hidden;
+        }
+
+        .sidebar h1 {
+            font-family: 'Lora', serif;
+            font-size: 24px;
+            font-weight: 500;
+            color: var(--anthropic-dark);
+            margin-bottom: 8px;
+        }
+
+        .sidebar .subtitle {
+            color: var(--anthropic-mid-gray);
+            font-size: 14px;
+            margin-bottom: 20px;
+            line-height: 1.4;
+        }
+
+        .status {
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            color: var(--anthropic-dark);
+            background: var(--anthropic-light);
+            border: 1px solid var(--anthropic-light-gray);
+            border-left: 3px solid var(--anthropic-orange);
+            border-radius: 6px;
+            padding: 10px 12px;
+            margin-bottom: 28px;
+            line-height: 1.5;
+        }
+
+        /* Control Sections */
+        .control-section {
+            margin-bottom: 32px;
+        }
+
+        .control-section h3 {
+            font-size: 16px;
+            font-weight: 600;
+            color: var(--anthropic-dark);
+            margin-bottom: 16px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .control-section h3::before {
+            content: '•';
+            color: var(--anthropic-orange);
+            font-weight: bold;
+        }
+
+        /* Seed Controls */
+        .seed-input {
+            width: 100%;
+            background: var(--anthropic-light);
+            padding: 12px;
+            border-radius: 8px;
+            font-family: 'Courier New', monospace;
+            font-size: 14px;
+            margin-bottom: 12px;
+            border: 1px solid var(--anthropic-light-gray);
+            text-align: center;
+        }
+
+        .seed-input:focus {
+            outline: none;
+            border-color: var(--anthropic-orange);
+            box-shadow: 0 0 0 2px rgba(217, 119, 87, 0.1);
+            background: white;
+        }
+
+        .seed-controls {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+            margin-bottom: 8px;
+        }
+
+        .regen-button {
+            margin-bottom: 0;
+        }
+
+        /* Parameter Controls */
+        .control-group {
+            margin-bottom: 20px;
+        }
+
+        .control-group label {
+            display: block;
+            font-size: 14px;
+            font-weight: 500;
+            color: var(--anthropic-dark);
+            margin-bottom: 8px;
+        }
+
+        .control-group .hint {
+            display: block;
+            font-size: 11px;
+            font-weight: 400;
+            color: var(--anthropic-mid-gray);
+            margin-top: -4px;
+            margin-bottom: 8px;
+        }
+
+        .slider-container {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .slider-container input[type="range"] {
+            flex: 1;
+            height: 4px;
+            background: var(--anthropic-light-gray);
+            border-radius: 2px;
+            outline: none;
+            -webkit-appearance: none;
+        }
+
+        .slider-container input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 16px;
+            height: 16px;
+            background: var(--anthropic-orange);
+            border-radius: 50%;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .slider-container input[type="range"]::-webkit-slider-thumb:hover {
+            transform: scale(1.1);
+            background: #c86641;
+        }
+
+        .slider-container input[type="range"]::-moz-range-thumb {
+            width: 16px;
+            height: 16px;
+            background: var(--anthropic-orange);
+            border-radius: 50%;
+            border: none;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .value-display {
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            color: var(--anthropic-mid-gray);
+            min-width: 60px;
+            text-align: right;
+        }
+
+        /* Color Pickers */
+        .color-group {
+            margin-bottom: 16px;
+        }
+
+        .color-group label {
+            display: block;
+            font-size: 12px;
+            color: var(--anthropic-mid-gray);
+            margin-bottom: 4px;
+        }
+
+        .color-picker-container {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .color-picker-container input[type="color"] {
+            width: 32px;
+            height: 32px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            background: none;
+            padding: 0;
+        }
+
+        .color-value {
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            color: var(--anthropic-mid-gray);
+        }
+
+        /* Buttons */
+        .button {
+            background: var(--anthropic-orange);
+            color: white;
+            border: none;
+            padding: 10px 16px;
+            border-radius: 6px;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            width: 100%;
+        }
+
+        .button:hover {
+            background: #c86641;
+            transform: translateY(-1px);
+        }
+
+        .button:active {
+            transform: translateY(0);
+        }
+
+        .button.secondary {
+            background: var(--anthropic-blue);
+        }
+
+        .button.secondary:hover {
+            background: #5a8bb8;
+        }
+
+        .button.tertiary {
+            background: var(--anthropic-green);
+        }
+
+        .button.tertiary:hover {
+            background: #6b7b52;
+        }
+
+        .button.small {
+            font-size: 12px;
+            padding: 8px 6px;
+            background: var(--anthropic-light);
+            color: var(--anthropic-dark);
+            border: 1px solid var(--anthropic-light-gray);
+        }
+
+        .button.small:hover {
+            background: white;
+            border-color: var(--anthropic-orange);
+        }
+
+        .preset-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+            margin-bottom: 16px;
+        }
+
+        .button-row {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 8px;
+        }
+
+        .button-row .button {
+            flex: 1;
+        }
+
+        /* Canvas Area */
+        .canvas-area {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-width: 0;
+        }
+
+        #canvas-container {
+            width: 100%;
+            max-width: 1000px;
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: 0 20px 40px rgba(20, 20, 19, 0.1);
+            background: white;
+        }
+
+        #canvas-container canvas {
+            display: block;
+            width: 100% !important;
+            height: auto !important;
+        }
+
+        /* Loading State */
+        .loading {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 80px 20px;
+            font-size: 18px;
+            color: var(--anthropic-mid-gray);
+        }
+
+        /* Responsive - Stack on mobile */
+        @media (max-width: 600px) {
+            .container {
+                flex-direction: column;
+            }
+
+            .sidebar {
+                width: 100%;
+            }
+
+            .canvas-area {
+                padding: 20px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- Control Sidebar -->
+        <div class="sidebar">
+            <h1>Stillpoint</h1>
+            <div class="subtitle">
+                Ash settling on the silent lines of a struck plate. Nine confirmations
+                make a record.
+            </div>
+            <div class="status" id="status">plate idle</div>
+
+            <!-- Seed Section -->
+            <div class="control-section">
+                <h3>Striking Pattern</h3>
+                <input type="number" id="seed-input" class="seed-input" value="12345" onchange="updateSeed()">
+                <div class="seed-controls">
+                    <button class="button secondary" onclick="previousSeed()">← Prev</button>
+                    <button class="button secondary" onclick="nextSeed()">Next →</button>
+                </div>
+                <button class="button tertiary regen-button" onclick="randomSeedAndUpdate()">↻ Random</button>
+            </div>
+
+            <!-- Parameters Section -->
+            <div class="control-section">
+                <h3>Parameters</h3>
+
+                <div class="control-group">
+                    <label>Harmonics</label>
+                    <span class="hint">how many modes argue with each other</span>
+                    <div class="slider-container">
+                        <input type="range" id="modes" min="2" max="7" step="1" value="5" oninput="updateParam('modes', this.value)">
+                        <span class="value-display" id="modes-value">5</span>
+                    </div>
+                </div>
+
+                <div class="control-group">
+                    <label>Mode Order</label>
+                    <span class="hint">highest harmonic the plate will hold</span>
+                    <div class="slider-container">
+                        <input type="range" id="order" min="3" max="14" step="1" value="9" oninput="updateParam('order', this.value)">
+                        <span class="value-display" id="order-value">9</span>
+                    </div>
+                </div>
+
+                <div class="control-group">
+                    <label>Rosette Bias</label>
+                    <span class="hint">radial modes vs. square-plate modes</span>
+                    <div class="slider-container">
+                        <input type="range" id="rosette" min="0" max="1" step="0.05" value="0.4" oninput="updateParam('rosette', this.value)">
+                        <span class="value-display" id="rosette-value">0.40</span>
+                    </div>
+                </div>
+
+                <div class="control-group">
+                    <label>Alignment</label>
+                    <span class="hint">how strictly the modes share one axis</span>
+                    <div class="slider-container">
+                        <input type="range" id="alignment" min="0" max="1" step="0.05" value="0.85" oninput="updateParam('alignment', this.value)">
+                        <span class="value-display" id="alignment-value">0.85</span>
+                    </div>
+                </div>
+
+                <div class="control-group">
+                    <label>Ash Grain</label>
+                    <span class="hint">particles of settling matter</span>
+                    <div class="slider-container">
+                        <input type="range" id="grain" min="8000" max="140000" step="2000" value="60000" oninput="updateParam('grain', this.value)">
+                        <span class="value-display" id="grain-value">60000</span>
+                    </div>
+                </div>
+
+                <div class="control-group">
+                    <label>Airborne Ash</label>
+                    <span class="hint">fraction that never gets to rest</span>
+                    <div class="slider-container">
+                        <input type="range" id="airborne" min="0" max="0.4" step="0.01" value="0.15" oninput="updateParam('airborne', this.value)">
+                        <span class="value-display" id="airborne-value">0.15</span>
+                    </div>
+                </div>
+
+                <div class="control-group">
+                    <label>Agitation</label>
+                    <span class="hint">how hard the plate is struck</span>
+                    <div class="slider-container">
+                        <input type="range" id="temperature" min="0.2" max="3" step="0.05" value="1" oninput="updateParam('temperature', this.value)">
+                        <span class="value-display" id="temperature-value">1.00</span>
+                    </div>
+                </div>
+
+                <div class="control-group">
+                    <label>Settling</label>
+                    <span class="hint">pull toward the nodal lines</span>
+                    <div class="slider-container">
+                        <input type="range" id="settle" min="0" max="1" step="0.05" value="0.55" oninput="updateParam('settle', this.value)">
+                        <span class="value-display" id="settle-value">0.55</span>
+                    </div>
+                </div>
+
+                <div class="control-group">
+                    <label>Plate Warp</label>
+                    <span class="hint">flaws in the casting</span>
+                    <div class="slider-container">
+                        <input type="range" id="warp" min="0" max="0.09" step="0.005" value="0.025" oninput="updateParam('warp', this.value)">
+                        <span class="value-display" id="warp-value">0.025</span>
+                    </div>
+                </div>
+
+                <div class="control-group">
+                    <label>Confirmations</label>
+                    <span class="hint">successive strikes, each gentler</span>
+                    <div class="slider-container">
+                        <input type="range" id="confirmations" min="1" max="12" step="1" value="9" oninput="updateParam('confirmations', this.value)">
+                        <span class="value-display" id="confirmations-value">9</span>
+                    </div>
+                </div>
+
+                <div class="control-group">
+                    <label>Ash Weight</label>
+                    <span class="hint">exposure of the deposit</span>
+                    <div class="slider-container">
+                        <input type="range" id="exposure" min="0.2" max="3" step="0.05" value="1" oninput="updateParam('exposure', this.value)">
+                        <span class="value-display" id="exposure-value">1.00</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Colors Section -->
+            <div class="control-section">
+                <h3>Colors</h3>
+
+                <div class="preset-grid">
+                    <button class="button small" onclick="applyPreset(0)">Ash &amp; Ember</button>
+                    <button class="button small" onclick="applyPreset(1)">Salt Bell</button>
+                    <button class="button small" onclick="applyPreset(2)">Verdigris</button>
+                    <button class="button small" onclick="applyPreset(3)">Obsidian</button>
+                </div>
+
+                <div class="color-group">
+                    <label>Ground (the plate)</label>
+                    <div class="color-picker-container">
+                        <input type="color" id="color1" value="#efe8da" onchange="updateColor('color1', this.value)">
+                        <span class="color-value" id="color1-value">#efe8da</span>
+                    </div>
+                </div>
+
+                <div class="color-group">
+                    <label>Ash (settled)</label>
+                    <div class="color-picker-container">
+                        <input type="color" id="color2" value="#14130f" onchange="updateColor('color2', this.value)">
+                        <span class="color-value" id="color2-value">#14130f</span>
+                    </div>
+                </div>
+
+                <div class="color-group">
+                    <label>Resonance (still ringing)</label>
+                    <div class="color-picker-container">
+                        <input type="color" id="color3" value="#b4532c" onchange="updateColor('color3', this.value)">
+                        <span class="color-value" id="color3-value">#b4532c</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Actions Section -->
+            <div class="control-section">
+                <h3>Actions</h3>
+                <div class="button-row">
+                    <button class="button" onclick="regenerate()">Strike Again</button>
+                </div>
+                <div class="button-row">
+                    <button class="button secondary" onclick="downloadPNG()">Download PNG</button>
+                    <button class="button tertiary" onclick="resetParameters()">Reset</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Main Canvas Area -->
+        <div class="canvas-area">
+            <div id="canvas-container">
+                <div class="loading">Casting the plate…</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // ═══════════════════════════════════════════════════════════════════════
+        // STILLPOINT — PARAMETERS
+        // ═══════════════════════════════════════════════════════════════════════
+
+        let params = {
+            seed: 12345,
+            modes: 5,          // number of interfering harmonics
+            order: 9,          // highest mode index
+            rosette: 0.4,      // probability a mode is radial rather than square
+            alignment: 0.85,   // how strictly modes share the plate's axis
+            grain: 60000,      // ash particles
+            airborne: 0.15,    // fraction that never settles
+            temperature: 1.0,  // strike force -> jitter amplitude
+            settle: 0.55,      // Newton pull toward the zero-set
+            warp: 0.025,       // noise distortion of the plate
+            confirmations: 9,  // successive strikes
+            exposure: 1.0,     // tone-mapping of the deposit
+            colorPalette: ['#efe8da', '#14130f', '#b4532c']
+        };
+
+        let defaultParams = JSON.parse(JSON.stringify(params));
+
+        const PALETTES = [
+            ['#efe8da', '#14130f', '#b4532c'],  // Ash & Ember
+            ['#eceef0', '#1b2430', '#5b7f9e'],  // Salt Bell
+            ['#e9e6d8', '#17201c', '#4f8a72'],  // Verdigris
+            ['#14130f', '#ece5d5', '#c9743a']   // Obsidian
+        ];
+
+        // ═══════════════════════════════════════════════════════════════════════
+        // THE ALGORITHM
+        //
+        //   f(u,v) = Σ Aᵢ · sᵢ(Rᵢ(u,v))       superposed standing-wave modes
+        //   |f| large  -> the plate is loud   -> ash is thrown, nothing settles
+        //   |f| ≈ 0    -> the plate is still  -> ash accumulates: the record
+        //
+        //   Each grain: jitter ∝ |f|^0.75, plus a damped Newton step −f·∇f/|∇f|²
+        //   toward the zero-set. Nothing draws the lines. The lines are residue.
+        // ═══════════════════════════════════════════════════════════════════════
+
+        const W = 1000, H = 1000;
+        const CX = W / 2, CY = H / 2;
+        const PLATE_R = 430;
+        const G = 384;                       // field grid resolution
+        const GS = (G - 1) / W;              // px -> grid scale
+        const CELL = W / (G - 1);            // grid cell size in px
+        const FRAMES_PER_STRIKE = 34;
+        const MAX_STEP = 6;
+        const JITTER_FLOOR = 0.22;   // nothing on a struck plate is ever perfectly still
+        const DECAY_EVERY = 4;
+        const DECAY = Math.pow(0.98, DECAY_EVERY);
+
+        let rnd;                             // seeded PRNG
+        let modeStack = [];
+        let fGrid, gxGrid, gyGrid;           // field + gradient
+        let density, heat;                   // accumulation buffers
+        let groundMod;                       // paper grain + plate shading
+        let pxArr, pyArr;
+        let imgData = null;
+
+        let strikeIndex = 0, frameInStrike = 0, temp = 0, finished = false;
+        let signature = '';
+
+        function mulberry32(a) {
+            return function () {
+                a |= 0; a = (a + 0x6D2B79F5) | 0;
+                let t = Math.imul(a ^ (a >>> 15), 1 | a);
+                t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+                return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+            };
+        }
+
+        function setup() {
+            pixelDensity(1);
+            const c = createCanvas(W, H);
+            c.parent('canvas-container');
+            const l = document.querySelector('.loading');
+            if (l) l.style.display = 'none';
+            density = new Float32Array(W * H);
+            heat = new Float32Array(W * H);
+            groundMod = new Float32Array(W * H);
+            fGrid = new Float32Array(G * G);
+            gxGrid = new Float32Array(G * G);
+            gyGrid = new Float32Array(G * G);
+            imgData = drawingContext.createImageData(W, H);
+            initializeSystem();
+        }
+
+        // ── Casting the plate ────────────────────────────────────────────────
+
+        function initializeSystem() {
+            rnd = mulberry32(params.seed >>> 0);
+            randomSeed(params.seed);
+            noiseSeed(params.seed);
+
+            buildModeStack();
+            buildGroundTexture();
+            buildField();
+
+            const n = params.grain;
+            pxArr = new Float32Array(n);
+            pyArr = new Float32Array(n);
+            for (let i = 0; i < n; i++) {
+                const r = PLATE_R * Math.sqrt(rnd());
+                const a = rnd() * Math.PI * 2;
+                pxArr[i] = CX + r * Math.cos(a);
+                pyArr[i] = CY + r * Math.sin(a);
+            }
+
+            density.fill(0);
+            heat.fill(0);
+            strikeIndex = 0;
+            frameInStrike = 0;
+            finished = false;
+            temp = strikeTemperature(0);
+            loop();
+            updateStatus();
+        }
+
+        function buildModeStack() {
+            modeStack = [];
+            const K = params.modes;
+            const O = params.order;
+            const sig = [];
+            // Every mode is nominally cast on the same axis; alignment decides how
+            // far each is allowed to stray from it. Strict alignment yields the
+            // dihedral symmetry of a real plate, slack alignment yields drift.
+            const axis = rnd() * Math.PI * 2;
+            const slack = 1 - params.alignment;
+            for (let i = 0; i < K; i++) {
+                const amp = (1 / (1 + i * 0.95)) * (0.75 + 0.5 * rnd());
+                const quarter = Math.floor(rnd() * 4) * (Math.PI / 2);
+                const rot = axis + quarter + slack * (rnd() - 0.5) * Math.PI;
+                // Every voice is registered to the same centre. That shared
+                // registration is what makes the interference structured rather
+                // than generic — decohere it and the figure collapses to stripes.
+                const m = { amp: amp, rot: rot, ct: Math.cos(rot), st: Math.sin(rot) };
+                if (rnd() < params.rosette) {
+                    m.disc = true;
+                    const lo = i === 0 ? 2 : 1;
+                    m.p = lo + Math.floor(rnd() * Math.max(1, Math.ceil(O * 0.5)));
+                    m.q = (i === 0 ? 3 : 0) + Math.floor(rnd() * (O + 1));
+                    sig.push('R' + m.p + '·' + m.q);
+                } else {
+                    m.disc = false;
+                    // the dominant voice is drawn from the upper register, so the
+                    // figure has structure to argue about
+                    const lo = Math.max(2, Math.ceil(O * (i === 0 ? 0.6 : 0.35)));
+                    m.n = lo + Math.floor(rnd() * (O - lo + 1));
+                    let mm = lo + Math.floor(rnd() * (O - lo + 1));
+                    if (mm === m.n) mm = lo + ((mm - lo + 1) % (O - lo + 1));
+                    m.m = mm;
+                    sig.push(m.n + '·' + m.m);
+                }
+                modeStack.push(m);
+            }
+            signature = sig.join('  ');
+        }
+
+        // A single mode evaluated in unit plate coordinates.
+        function modeValue(m, du, dv) {
+            const ru = du * m.ct - dv * m.st;
+            const rv = du * m.st + dv * m.ct;
+            if (m.disc) {
+                const r = Math.sqrt(ru * ru + rv * rv) * 2;
+                const th = Math.atan2(rv, ru);
+                return Math.cos(m.p * Math.PI * r) * Math.cos(m.q * th);
+            }
+            const a = ru + 0.5, b = rv + 0.5;
+            return Math.cos(m.n * Math.PI * a) * Math.cos(m.m * Math.PI * b)
+                 - Math.cos(m.m * Math.PI * a) * Math.cos(m.n * Math.PI * b);
+        }
+
+        function buildField() {
+            const wp = params.warp;
+            const rGrid = PLATE_R * GS;          // plate radius in grid units
+            const cGrid = (G - 1) / 2;
+            let maxAbs = 1e-6;
+            for (let gy = 0; gy < G; gy++) {
+                for (let gx = 0; gx < G; gx++) {
+                    const u0 = gx / (G - 1), v0 = gy / (G - 1);
+                    let u = u0, v = v0;
+                    if (wp > 0) {
+                        u += wp * (noise(u0 * 3.1, v0 * 3.1) - 0.5) * 2;
+                        v += wp * (noise(u0 * 3.1 + 41.7, v0 * 3.1 + 17.3) - 0.5) * 2;
+                    }
+                    const du = u - 0.5, dv = v - 0.5;
+                    let s = 0;
+                    for (let i = 0; i < modeStack.length; i++) {
+                        s += modeStack[i].amp * modeValue(modeStack[i], du, dv);
+                    }
+                    fGrid[gy * G + gx] = s;
+                    const ddx = gx - cGrid, ddy = gy - cGrid;
+                    if (ddx * ddx + ddy * ddy <= rGrid * rGrid) {
+                        const a = Math.abs(s);
+                        if (a > maxAbs) maxAbs = a;
+                    }
+                }
+            }
+            const inv = 1 / maxAbs;
+            for (let i = 0; i < G * G; i++) fGrid[i] *= inv;
+
+            // Central-difference gradient, in pixel units.
+            for (let gy = 0; gy < G; gy++) {
+                for (let gx = 0; gx < G; gx++) {
+                    const i = gy * G + gx;
+                    const xm = fGrid[i - (gx > 0 ? 1 : 0)];
+                    const xp = fGrid[i + (gx < G - 1 ? 1 : 0)];
+                    const ym = fGrid[i - (gy > 0 ? G : 0)];
+                    const yp = fGrid[i + (gy < G - 1 ? G : 0)];
+                    gxGrid[i] = (xp - xm) / (2 * CELL);
+                    gyGrid[i] = (yp - ym) / (2 * CELL);
+                }
+            }
+        }
+
+        // Paper grain, plate shading and vignette — geometry only, so it is
+        // baked once and reused every frame.
+        function buildGroundTexture() {
+            const g = mulberry32((params.seed ^ 0x9e3779b9) >>> 0);
+            const cornerR = Math.sqrt(CX * CX + CY * CY);
+            for (let y = 0; y < H; y++) {
+                for (let x = 0; x < W; x++) {
+                    const dx = x - CX, dy = y - CY;
+                    const d = Math.sqrt(dx * dx + dy * dy);
+                    const rr = d / PLATE_R;
+                    let sh;
+                    if (rr < 1) sh = 2.6 * (1 - rr * rr * 0.55);
+                    else sh = -8 * Math.exp(-(rr - 1) * 13);
+                    const vig = -7 * Math.pow(d / cornerR, 2.3);
+                    groundMod[y * W + x] = (g() - 0.5) * 4.4 + sh + vig;
+                }
+            }
+        }
+
+        function strikeTemperature(i) {
+            return 9 * params.temperature * Math.pow(0.78, i);
+        }
+
+        // ── The settling ─────────────────────────────────────────────────────
+
+        function stepAsh() {
+            const n = params.grain;
+            const nAir = Math.floor(n * params.airborne);
+            const st = params.settle;
+            const T = temp;
+            const TA = 6.0 * params.temperature;   // the airborne fraction is never damped
+            for (let i = 0; i < n; i++) {
+                let x = pxArr[i], y = pyArr[i];
+
+                // bilinear sample of f and ∇f
+                let gu = x * GS, gv = y * GS;
+                if (gu < 0) gu = 0; else if (gu > G - 1.001) gu = G - 1.001;
+                if (gv < 0) gv = 0; else if (gv > G - 1.001) gv = G - 1.001;
+                const iu = gu | 0, iv = gv | 0;
+                const tu = gu - iu, tv = gv - iv;
+                const o = iv * G + iu;
+                const w00 = (1 - tu) * (1 - tv), w10 = tu * (1 - tv),
+                      w01 = (1 - tu) * tv,       w11 = tu * tv;
+                const f  = fGrid[o] * w00  + fGrid[o + 1] * w10  + fGrid[o + G] * w01  + fGrid[o + G + 1] * w11;
+                const gx = gxGrid[o] * w00 + gxGrid[o + 1] * w10 + gxGrid[o + G] * w01 + gxGrid[o + G + 1] * w11;
+                const gy = gyGrid[o] * w00 + gyGrid[o + 1] * w10 + gyGrid[o + G] * w01 + gyGrid[o + G + 1] * w11;
+
+                const a = f < 0 ? -f : f;
+                const g2 = gx * gx + gy * gy + 1e-9;
+                let jit, dx, dy, wgt;
+
+                if (i < nAir) {
+                    // Ash that never gets to rest: driven uphill, into the loud
+                    // regions, and shaken hardest exactly where it arrives.
+                    jit = TA * (0.3 + 0.7 * a);
+                    const sgn = (f < 0 ? -1 : 1) * 0.55 * (1 - a) / Math.sqrt(g2);
+                    dx = gx * sgn; dy = gy * sgn;
+                    wgt = 0.34;
+                } else {
+                    // The plate shakes what it has not yet agreed to hold, and a
+                    // damped Newton step carries the rest onto the zero-set.
+                    jit = T * Math.pow(a, 0.75) + JITTER_FLOOR;
+                    dx = -f * gx / g2 * st; dy = -f * gy / g2 * st;
+                    wgt = 1;
+                }
+
+                x += (rnd() * 2 - 1) * jit;
+                y += (rnd() * 2 - 1) * jit;
+
+                const dm = Math.sqrt(dx * dx + dy * dy);
+                if (dm > MAX_STEP) { const s = MAX_STEP / dm; dx *= s; dy *= s; }
+                x += dx; y += dy;
+
+                // the rim is free but finite
+                const ox = x - CX, oy = y - CY;
+                const rr = Math.sqrt(ox * ox + oy * oy);
+                if (rr > PLATE_R) {
+                    const s = (PLATE_R / rr) * 0.999;
+                    x = CX + ox * s; y = CY + oy * s;
+                }
+
+                pxArr[i] = x; pyArr[i] = y;
+
+                // deposit
+                const fx = x | 0, fy = y | 0;
+                if (fx >= 0 && fy >= 0 && fx < W - 1 && fy < H - 1) {
+                    const sx = x - fx, sy = y - fy;
+                    const d0 = fy * W + fx;
+                    const q00 = (1 - sx) * (1 - sy) * wgt, q10 = sx * (1 - sy) * wgt,
+                          q01 = (1 - sx) * sy * wgt,       q11 = sx * sy * wgt;
+                    density[d0] += q00;          heat[d0] += q00 * a;
+                    density[d0 + 1] += q10;      heat[d0 + 1] += q10 * a;
+                    density[d0 + W] += q01;      heat[d0 + W] += q01 * a;
+                    density[d0 + W + 1] += q11;  heat[d0 + W + 1] += q11 * a;
+                }
+            }
+        }
+
+        function forget() {
+            for (let i = 0, L = W * H; i < L; i++) {
+                density[i] *= DECAY;
+                heat[i] *= DECAY;
+            }
+        }
+
+        function strike() {
+            // Each confirmation perturbs the plate less than the one before it.
+            const pert = 0.10 * Math.pow(0.62, strikeIndex);
+            for (let i = 0; i < modeStack.length; i++) {
+                const m = modeStack[i];
+                m.rot += (rnd() - 0.5) * pert * 2;
+                m.ct = Math.cos(m.rot); m.st = Math.sin(m.rot);
+                m.amp *= 1 + (rnd() - 0.5) * pert;
+            }
+            buildField();
+            temp = strikeTemperature(strikeIndex);
+        }
+
+        function draw() {
+            if (finished) return;
+
+            stepAsh();
+            if (frameCount % DECAY_EVERY === 0) forget();
+
+            frameInStrike++;
+            const prog = frameInStrike / FRAMES_PER_STRIKE;
+            temp = Math.max(0.11, strikeTemperature(strikeIndex) * Math.exp(-2.2 * prog));
+
+            if (frameInStrike >= FRAMES_PER_STRIKE) {
+                frameInStrike = 0;
+                strikeIndex++;
+                updateStatus();
+                if (strikeIndex >= params.confirmations) {
+                    finished = true;
+                    renderPlate();
+                    updateStatus();
+                    noLoop();
+                    return;
+                }
+                strike();
+            }
+
+            if (frameCount % 2 === 0) renderPlate();
+        }
+
+        // ── The photograph ───────────────────────────────────────────────────
+
+        function hexRGB(h) {
+            const v = parseInt(h.slice(1), 16);
+            return { r: (v >> 16) & 255, g: (v >> 8) & 255, b: v & 255 };
+        }
+
+        function renderPlate() {
+            const gr = hexRGB(params.colorPalette[0]);
+            const as = hexRGB(params.colorPalette[1]);
+            const re = hexRGB(params.colorPalette[2]);
+            const k = params.exposure * 3000 / params.grain;
+            const d = imgData.data;
+
+            for (let i = 0, p = 0, L = W * H; i < L; i++, p += 4) {
+                const dv = density[i];
+                const gm = groundMod[i];
+                let R0 = gr.r + gm, G0 = gr.g + gm, B0 = gr.b + gm;
+
+                if (dv > 0.0002) {
+                    let t = 1 - Math.exp(-dv * k);
+                    t = Math.pow(t, 0.8);
+                    let hv = heat[i] / dv;
+                    let mx = (hv - 0.10) / 0.35;
+                    mx = mx < 0 ? 0 : mx > 1 ? 1 : mx;
+                    mx = mx * mx * (3 - 2 * mx);
+                    const cr = as.r + (re.r - as.r) * mx;
+                    const cg = as.g + (re.g - as.g) * mx;
+                    const cb = as.b + (re.b - as.b) * mx;
+                    R0 += (cr - R0) * t;
+                    G0 += (cg - G0) * t;
+                    B0 += (cb - B0) * t;
+                }
+
+                d[p]     = R0 < 0 ? 0 : R0 > 255 ? 255 : R0;
+                d[p + 1] = G0 < 0 ? 0 : G0 > 255 ? 255 : G0;
+                d[p + 2] = B0 < 0 ? 0 : B0 > 255 ? 255 : B0;
+                d[p + 3] = 255;
+            }
+            drawingContext.putImageData(imgData, 0, 0);
+            drawEngraving();
+        }
+
+        // Rim, confirmation ticks and the plate's filed record.
+        function drawEngraving() {
+            const as = hexRGB(params.colorPalette[1]);
+            push();
+            noFill();
+            stroke(as.r, as.g, as.b, 46);
+            strokeWeight(1.1);
+            circle(CX, CY, PLATE_R * 2);
+            stroke(as.r, as.g, as.b, 20);
+            circle(CX, CY, PLATE_R * 2 + 54);
+
+            const n = params.confirmations;
+            for (let i = 0; i < n; i++) {
+                const a = -Math.PI / 2 + (i / n) * Math.PI * 2;
+                const done = i < strikeIndex;
+                stroke(as.r, as.g, as.b, done ? 190 : 34);
+                strokeWeight(done ? 2.1 : 1.1);
+                const r0 = PLATE_R + 9, r1 = PLATE_R + (done ? 22 : 17);
+                line(CX + Math.cos(a) * r0, CY + Math.sin(a) * r0,
+                     CX + Math.cos(a) * r1, CY + Math.sin(a) * r1);
+            }
+            pop();
+
+            push();
+            noStroke();
+            fill(as.r, as.g, as.b, 105);
+            textFont('Courier New');
+            textSize(11);
+            textAlign(CENTER, BASELINE);
+            text('STILLPOINT  ·  PLATE ' + params.seed + '  ·  ' + signature +
+                 '  ·  ' + Math.min(strikeIndex, params.confirmations) + '/' + params.confirmations,
+                 CX, H - 30);
+            pop();
+        }
+
+        function updateStatus() {
+            const el = document.getElementById('status');
+            if (!el) return;
+            const c = Math.min(strikeIndex, params.confirmations);
+            el.innerHTML = (finished
+                ? 'CONFIRMED &nbsp;' + c + ' / ' + params.confirmations
+                : 'settling &nbsp;·&nbsp; confirmation ' + (c + 1) + ' / ' + params.confirmations)
+                + '<br>modes &nbsp;' + signature;
+        }
+
+        // ═══════════════════════════════════════════════════════════════════════
+        // UI CONTROL HANDLERS
+        // ═══════════════════════════════════════════════════════════════════════
+
+        const INT_PARAMS = ['modes', 'order', 'grain', 'confirmations'];
+
+        function updateParam(name, value) {
+            const v = INT_PARAMS.indexOf(name) >= 0 ? parseInt(value) : parseFloat(value);
+            params[name] = v;
+            document.getElementById(name + '-value').textContent =
+                INT_PARAMS.indexOf(name) >= 0 ? v : v.toFixed(name === 'warp' ? 3 : 2);
+            initializeSystem();
+        }
+
+        function updateColor(id, value) {
+            const idx = { color1: 0, color2: 1, color3: 2 }[id];
+            params.colorPalette[idx] = value;
+            document.getElementById(id + '-value').textContent = value;
+            renderPlate();
+        }
+
+        function applyPreset(i) {
+            params.colorPalette = PALETTES[i].slice();
+            syncColorUI();
+            renderPlate();
+        }
+
+        function syncColorUI() {
+            ['color1', 'color2', 'color3'].forEach(function (id, i) {
+                document.getElementById(id).value = params.colorPalette[i];
+                document.getElementById(id + '-value').textContent = params.colorPalette[i];
+            });
+        }
+
+        function regenerate() { initializeSystem(); }
+
+        function downloadPNG() { saveCanvas('stillpoint-plate-' + params.seed, 'png'); }
+
+        // ═══════════════════════════════════════════════════════════════════════
+        // SEED CONTROL FUNCTIONS
+        // ═══════════════════════════════════════════════════════════════════════
+
+        function updateSeedDisplay() {
+            document.getElementById('seed-input').value = params.seed;
+        }
+
+        function updateSeed() {
+            const input = document.getElementById('seed-input');
+            const newSeed = parseInt(input.value);
+            if (newSeed && newSeed > 0) {
+                params.seed = newSeed;
+                initializeSystem();
+            } else {
+                updateSeedDisplay();
+            }
+        }
+
+        function previousSeed() {
+            params.seed = Math.max(1, params.seed - 1);
+            updateSeedDisplay();
+            initializeSystem();
+        }
+
+        function nextSeed() {
+            params.seed = params.seed + 1;
+            updateSeedDisplay();
+            initializeSystem();
+        }
+
+        function randomSeedAndUpdate() {
+            params.seed = Math.floor(Math.random() * 999999) + 1;
+            updateSeedDisplay();
+            initializeSystem();
+        }
+
+        function resetParameters() {
+            params = JSON.parse(JSON.stringify(defaultParams));
+            ['modes', 'order', 'rosette', 'alignment', 'grain', 'airborne',
+             'temperature', 'settle', 'warp', 'confirmations', 'exposure'].forEach(function (nm) {
+                document.getElementById(nm).value = params[nm];
+                document.getElementById(nm + '-value').textContent =
+                    INT_PARAMS.indexOf(nm) >= 0 ? params[nm]
+                        : params[nm].toFixed(nm === 'warp' ? 3 : 2);
+            });
+            syncColorUI();
+            updateSeedDisplay();
+            initializeSystem();
+        }
+
+        window.addEventListener('load', function () { updateSeedDisplay(); });
+    </script>
+</body>
+</html>
