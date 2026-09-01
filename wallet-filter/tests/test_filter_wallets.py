@@ -36,11 +36,23 @@ class FakeResponse:
 class FakeSession:
     """Answers eth_getTransactionCount and alchemy_getAssetTransfers from a dict."""
 
-    def __init__(self, nonces=None, transfers=None, script=None):
+    def __init__(self, nonces=None, transfers=None, script=None, balances=None, codes=None):
         self.nonces = nonces or {}
         self.transfers = transfers or {}
+        self.balances = balances or {}  # address -> wei
+        self.codes = codes or {}  # address -> bytecode hex ("0x" for an EOA)
         self.script = list(script or [])  # queued canned responses, popped first
         self.calls = []
+
+    def _batch_result(self, item):
+        """Answer one entry of a JSON-RPC batch according to its method."""
+        method = item.get("method")
+        address = item["params"][0]
+        if method == "eth_getBalance":
+            return hex(self.balances.get(address, 0))
+        if method == "eth_getCode":
+            return self.codes.get(address, "0x")
+        return hex(self.nonces.get(address, 0))
 
     def post(self, url, json=None, timeout=None):  # noqa: A002
         self.calls.append(json)
@@ -53,7 +65,7 @@ class FakeSession:
         if isinstance(json, list):
             return FakeResponse(
                 [
-                    {"jsonrpc": "2.0", "id": item["id"], "result": hex(self.nonces.get(item["params"][0], 0))}
+                    {"jsonrpc": "2.0", "id": item["id"], "result": self._batch_result(item)}
                     for item in json
                 ]
             )
@@ -570,7 +582,14 @@ def test_summary_json_matches_the_csvs(tmp_path):
     fw.write_outputs(tmp_path, results, threshold=4)
 
     summary = json.loads((tmp_path / "summary.json").read_text())
-    assert summary == {"passed": 1, "filtered": 1, "errors": 1, "min_tx": 4, "total": 2}
+    assert summary == {
+        "passed": 1,
+        "filtered": 1,
+        "errors": 1,
+        "min_tx": 4,
+        "total": 2,
+        "filtered_by": {"min_tx": 1},
+    }
 
 
 def test_ci_summary_rendering(tmp_path):
@@ -775,3 +794,251 @@ def test_estimate_ranks_the_modes_by_cost():
     assert nonce_low == nonce_high == 7871 * 26  # exact, no range
     assert both_low == nonce_low  # best case: nobody needs a transfer lookup
     assert both_high < transfers_high  # worst case still beats pure transfers
+
+
+# ------------------------------------------------------------------- screening
+
+
+ETH = 10**18
+
+
+def write_list(path: Path, addresses) -> Path:
+    path.write_text("\n".join(addresses) + "\n")
+    return path
+
+
+def test_parses_eth_amounts_exactly():
+    assert fw.parse_eth_amount("0") == 0
+    assert fw.parse_eth_amount("1") == ETH
+    assert fw.parse_eth_amount("0.01") == ETH // 100
+    # The case float maths would get wrong.
+    assert fw.parse_eth_amount("0.1") == 10**17
+    assert fw.parse_eth_amount("1.5") == 15 * 10**17
+
+
+def test_rejects_nonsense_eth_amounts():
+    for bad in ("abc", "1.2.3", "-1", "1e18", "."):
+        with pytest.raises(ValueError):
+            fw.parse_eth_amount(bad)
+
+
+def test_address_list_ignores_comments_and_junk(tmp_path):
+    path = tmp_path / "deny.txt"
+    path.write_text(f"# a comment\n{addr(1)}\n\nnot-an-address\n{addr(2)}  # trailing\n")
+    assert fw.load_address_list(path) == {addr(1), addr(2)}
+
+
+def test_address_list_is_case_insensitive(tmp_path):
+    path = tmp_path / "deny.txt"
+    path.write_text("0x" + "A" * 40 + "\n")
+    assert fw.load_address_list(path) == {"0x" + "a" * 40}
+
+
+def test_denylist_rejects_without_any_network():
+    screen = fw.Screen(denylist=frozenset({addr(1)}))
+    settled, remaining = fw.screen_local([addr(1), addr(2)], screen)
+
+    assert [(r.address, r.rejected_by) for r in settled] == [(addr(1), "denylist")]
+    assert remaining == [addr(2)]
+
+
+def test_allowlist_keeps_without_counting():
+    screen = fw.Screen(allowlist=frozenset({addr(1)}))
+    settled, remaining = fw.screen_local([addr(1), addr(2)], screen)
+
+    assert [(r.address, r.kept_by) for r in settled] == [(addr(1), "allowlist")]
+    assert settled[0].verdict(threshold=99) is True  # kept regardless of the bar
+    assert remaining == [addr(2)]
+
+
+def test_denylist_beats_allowlist():
+    screen = fw.Screen(denylist=frozenset({addr(1)}), allowlist=frozenset({addr(1)}))
+    settled, _ = fw.screen_local([addr(1)], screen)
+    assert settled[0].rejected_by == "denylist"
+
+
+def test_screen_local_is_case_insensitive():
+    screen = fw.Screen(denylist=frozenset({addr(1)}))
+    settled, remaining = fw.screen_local([addr(1).upper().replace("0X", "0x")], screen)
+    assert settled and settled[0].rejected_by == "denylist"
+    assert remaining == []
+
+
+def test_min_balance_rejects_poor_wallets():
+    session = FakeSession(balances={addr(1): 5 * ETH, addr(2): 0})
+    screen = fw.Screen(min_balance_wei=ETH)
+
+    rejected = fw.screen_onchain(client_for(session), [addr(1), addr(2)], screen)
+
+    # Only the failing wallet comes back; the rich one is left to be counted.
+    assert [(r.address, r.rejected_by) for r in rejected] == [(addr(2), "min_balance")]
+
+
+def test_min_balance_boundary_is_inclusive():
+    session = FakeSession(balances={addr(1): ETH})
+    rejected = fw.screen_onchain(client_for(session), [addr(1)], fw.Screen(min_balance_wei=ETH))
+    assert rejected == []
+
+
+def test_exclude_contracts_rejects_addresses_with_code():
+    session = FakeSession(codes={addr(1): "0x", addr(2): "0x60806040"})
+    screen = fw.Screen(exclude_contracts=True)
+
+    rejected = fw.screen_onchain(client_for(session), [addr(1), addr(2)], screen)
+
+    assert [(r.address, r.rejected_by) for r in rejected] == [(addr(2), "contract")]
+
+
+def test_screen_onchain_batches_both_checks_in_one_request():
+    session = FakeSession(balances={addr(1): 5 * ETH}, codes={addr(1): "0x"})
+    screen = fw.Screen(min_balance_wei=ETH, exclude_contracts=True)
+
+    fw.screen_onchain(client_for(session), [addr(1), addr(2)], screen)
+
+    assert len(session.calls) == 1  # one round trip, not one per check
+    methods = sorted(item["method"] for item in session.calls[0])
+    assert methods == ["eth_getBalance", "eth_getBalance", "eth_getCode", "eth_getCode"]
+
+
+def test_screen_onchain_is_a_no_op_without_onchain_criteria():
+    session = FakeSession()
+    assert fw.screen_onchain(client_for(session), [addr(1)], fw.Screen()) == []
+    assert session.calls == []
+
+
+def test_screened_wallets_never_reach_the_counting_stages():
+    # addr(1) is denied, addr(2) has no balance, addr(3) survives to be counted.
+    session = FakeSession(nonces={addr(3): 9}, balances={addr(2): 0, addr(3): 5 * ETH})
+    cfg = fw.Config(
+        mode="nonce",
+        threshold=4,
+        screen=fw.Screen(denylist=frozenset({addr(1)}), min_balance_wei=ETH),
+    )
+
+    results = fw.run(client_for(session), [addr(1), addr(2), addr(3)], cfg)
+    by_address = {r.address: r for r in results}
+
+    assert by_address[addr(1)].rejected_by == "denylist"
+    assert by_address[addr(2)].rejected_by == "min_balance"
+    assert by_address[addr(3)].count == 9
+
+    # The nonce batch asked about the survivor only.
+    nonce_batches = [c for c in session.calls if any(i["method"] == "eth_getTransactionCount" for i in c)]
+    asked = {i["params"][0] for batch in nonce_batches for i in batch}
+    assert asked == {addr(3)}
+
+
+def test_screening_results_survive_transfers_mode():
+    session = FakeSession(transfers={(addr(2), "fromAddress"): 9, (addr(2), "toAddress"): 0})
+    cfg = fw.Config(mode="transfers", threshold=1, screen=fw.Screen(denylist=frozenset({addr(1)})))
+
+    results = fw.run(client_for(session), [addr(1), addr(2)], cfg)
+
+    assert {r.address for r in results} == {addr(1), addr(2)}
+    assert next(r for r in results if r.address == addr(1)).rejected_by == "denylist"
+
+
+def test_outputs_carry_the_rejection_reason(tmp_path):
+    results = [
+        fw.Result(addr(1), 9),
+        fw.Result(addr(2), 1),
+        fw.Result(addr(3), -1, rejected_by="denylist"),
+        fw.Result(addr(4), -1, kept_by="allowlist"),
+    ]
+    fw.write_outputs(tmp_path, results, threshold=4)
+
+    passed = {row["address"]: row for row in csv.DictReader((tmp_path / "passed.csv").open())}
+    filtered = {row["address"]: row for row in csv.DictReader((tmp_path / "filtered.csv").open())}
+
+    assert set(passed) == {addr(1), addr(4)}
+    assert set(filtered) == {addr(2), addr(3)}
+    assert filtered[addr(3)]["reason"] == "denylist"
+    assert filtered[addr(2)]["reason"] == "min_tx"
+    assert passed[addr(4)]["reason"] == "allowlist"
+    # Never counted, so the count cell stays blank rather than claiming a number.
+    assert passed[addr(4)]["tx_count"] == ""
+    assert filtered[addr(3)]["tx_count"] == ""
+
+
+def test_summary_breaks_down_why_wallets_were_filtered(tmp_path):
+    results = [
+        fw.Result(addr(1), 1),
+        fw.Result(addr(2), -1, rejected_by="denylist"),
+        fw.Result(addr(3), -1, rejected_by="contract"),
+        fw.Result(addr(4), -1, rejected_by="contract"),
+    ]
+    fw.write_outputs(tmp_path, results, threshold=4)
+
+    summary = json.loads((tmp_path / "summary.json").read_text())
+    assert summary["filtered_by"] == {"min_tx": 1, "denylist": 1, "contract": 2}
+
+
+def test_checkpoint_round_trips_screening_verdicts(tmp_path):
+    path = tmp_path / "checkpoint.jsonl"
+    writer = fw.CheckpointWriter(path)
+    writer.write([fw.Result(addr(1), -1, rejected_by="denylist"), fw.Result(addr(2), -1, kept_by="allowlist")])
+    writer.close()
+
+    restored = fw.load_checkpoint(path)
+    assert restored[addr(1)].rejected_by == "denylist"
+    assert restored[addr(2)].kept_by == "allowlist"
+
+
+def test_changing_the_screen_invalidates_a_checkpoint(tmp_path):
+    meta = tmp_path / "meta.json"
+    base = fw.Config(screen=fw.Screen(min_balance_wei=ETH))
+    meta.write_text(json.dumps(fw.run_signature(base)))
+
+    assert fw.describe_signature_mismatch(meta, base) is None
+    changed = fw.Config(screen=fw.Screen(min_balance_wei=2 * ETH))
+    assert "screen" in (fw.describe_signature_mismatch(meta, changed) or "")
+
+
+def test_estimate_prices_the_screen():
+    plain = fw.estimate(100, "nonce", 0)[0]
+    screened = fw.estimate(100, "nonce", 0, fw.Screen(min_balance_wei=1, exclude_contracts=True))[0]
+    assert screened == plain + 100 * (fw.CU_BALANCE + fw.CU_CODE)
+
+
+def test_build_screen_reports_a_missing_list(tmp_path):
+    parser = fw.build_parser()
+    args = parser.parse_args([str(tmp_path / "in.csv"), "--denylist", str(tmp_path / "nope.txt")])
+    with pytest.raises(OSError):
+        fw.build_screen(args)
+
+
+def test_cli_wires_screening_through(tmp_path, monkeypatch):
+    wallets = tmp_path / "w.csv"
+    wallets.write_text(f"{addr(1)}\n{addr(2)}\n{addr(3)}\n")
+    deny = write_list(tmp_path / "deny.txt", [addr(1)])
+    out = tmp_path / "out"
+
+    session = FakeSession(nonces={addr(2): 9, addr(3): 0}, balances={addr(2): 5 * ETH, addr(3): 5 * ETH})
+    monkeypatch.setattr(fw.requests, "Session", lambda: session)
+
+    code = fw.main(
+        [
+            str(wallets), "--url", "http://fake", "--out", str(out),
+            "--min-tx", "4", "--mode", "nonce", "--cu-per-second", "0",
+            "--denylist", str(deny), "--min-balance", "0.5",
+        ]
+    )
+
+    assert code == 0
+    rows = {r["address"]: r for r in csv.DictReader((out / "results.csv").open())}
+    assert rows[addr(1)]["reason"] == "denylist"
+    assert rows[addr(2)]["passed"] == "True"
+    assert rows[addr(3)]["reason"] == "min_tx"
+
+
+def test_formats_eth_without_float_error():
+    assert fw.format_eth(0) == "0"
+    assert fw.format_eth(ETH) == "1"
+    assert fw.format_eth(10**17) == "0.1"
+    assert fw.format_eth(ETH // 100) == "0.01"
+    assert fw.format_eth(15 * 10**17) == "1.5"
+
+
+def test_eth_amount_round_trips_through_formatting():
+    for text in ("0.01", "0.1", "1", "1.5", "12.345"):
+        assert fw.format_eth(fw.parse_eth_amount(text)) == text

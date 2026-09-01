@@ -43,7 +43,7 @@ import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Callable, Iterable, Iterator, Sequence
 
@@ -54,6 +54,9 @@ ADDRESS_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
 # Compute-unit cost per RPC method, used only to estimate runtime up front.
 CU_NONCE = 26
 CU_TRANSFERS = 150
+# Both are plain state reads, priced the same as a nonce, and batch the same way.
+CU_BALANCE = 26
+CU_CODE = 26
 
 TRANSFER_CATEGORIES = ("external", "internal", "erc20", "erc721", "erc1155", "specialnft")
 
@@ -162,6 +165,33 @@ class Result:
     capped: bool = False  # count stopped early at the threshold; true count may be higher
     error: str | None = None
     partial: bool = False  # "both" mode: outbound is known, inbound still to come
+    # Set when a screening criterion settled the wallet without counting it.
+    # Only one is ever populated; both None means "decide on the tx count".
+    rejected_by: str | None = None  # name of the criterion that excluded it
+    kept_by: str | None = None  # name of the criterion that kept it outright
+
+    @property
+    def counted(self) -> bool:
+        """False for wallets screened out before any counting happened."""
+        return self.count >= 0
+
+    def verdict(self, threshold: int) -> bool:
+        """Did this wallet make the final cut?"""
+        if self.error is not None:
+            return False
+        if self.rejected_by is not None:
+            return False
+        if self.kept_by is not None:
+            return True
+        return self.count >= threshold
+
+    def reason(self, threshold: int) -> str:
+        """Why the wallet landed where it did, for the output CSVs."""
+        if self.rejected_by is not None:
+            return self.rejected_by
+        if self.kept_by is not None:
+            return self.kept_by
+        return "min_tx" if self.count < threshold else "tx_count"
 
 
 class CuLimiter:
@@ -343,6 +373,164 @@ class AlchemyClient:
 
 
 # --------------------------------------------------------------------------
+# screening criteria
+# --------------------------------------------------------------------------
+
+
+def format_eth(wei: int) -> str:
+    """Render wei as a plain ETH string, without trailing zeros or float error."""
+    whole, frac = divmod(int(wei), 10**18)
+    if not frac:
+        return str(whole)
+    return f"{whole}.{frac:018d}".rstrip("0")
+
+
+@dataclass
+class Screen:
+    """Criteria applied besides the transaction count.
+
+    Ordered by what they cost. The lists are free and settle a wallet with no
+    network at all; balance and code are one batched state read each. Anything a
+    cheap criterion rejects never reaches the 150 CU inbound lookup, which is the
+    same cheapest-first principle the counting stages already use.
+    """
+
+    denylist: frozenset[str] = frozenset()
+    allowlist: frozenset[str] = frozenset()
+    min_balance_wei: int = 0
+    exclude_contracts: bool = False
+
+    @property
+    def needs_balance(self) -> bool:
+        return self.min_balance_wei > 0
+
+    @property
+    def needs_code(self) -> bool:
+        return self.exclude_contracts
+
+    @property
+    def active(self) -> bool:
+        return bool(self.denylist or self.allowlist) or self.needs_balance or self.needs_code
+
+    @property
+    def cu_per_address(self) -> int:
+        """Compute units the on-chain half of the screen costs per wallet."""
+        return (CU_BALANCE if self.needs_balance else 0) + (CU_CODE if self.needs_code else 0)
+
+    def describe(self) -> str:
+        parts = []
+        if self.denylist:
+            parts.append(f"denylist={len(self.denylist)}")
+        if self.allowlist:
+            parts.append(f"allowlist={len(self.allowlist)}")
+        if self.needs_balance:
+            parts.append(f"min-balance={format_eth(self.min_balance_wei)} ETH")
+        if self.exclude_contracts:
+            parts.append("exclude-contracts")
+        return " ".join(parts)
+
+
+def load_address_list(path: Path) -> frozenset[str]:
+    """Read a deny/allow list: one address per line, `#` comments allowed.
+
+    Malformed lines are ignored rather than fatal -- these files are usually
+    pasted together by hand, and one bad row should not stop a run.
+    """
+    addresses: set[str] = set()
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.split("#", 1)[0].strip()
+        if ADDRESS_RE.match(line):
+            addresses.add(line.lower())
+    return frozenset(addresses)
+
+
+def screen_local(addresses: Sequence[str], screen: Screen) -> tuple[list[Result], list[str]]:
+    """Apply the free criteria. Returns (settled, still-to-check).
+
+    The denylist wins over the allowlist: an address on both is a contradiction,
+    and refusing is the safer way to resolve it.
+    """
+    settled: list[Result] = []
+    remaining: list[str] = []
+
+    for address in addresses:
+        key = address.lower()
+        if key in screen.denylist:
+            settled.append(Result(address, -1, rejected_by="denylist"))
+        elif key in screen.allowlist:
+            settled.append(Result(address, -1, kept_by="allowlist"))
+        else:
+            remaining.append(address)
+
+    return settled, remaining
+
+
+def screen_onchain(client: AlchemyClient, addresses: Sequence[str], screen: Screen) -> list[Result]:
+    """Balance and/or contract-code checks for a batch, in one round trip.
+
+    Returns a Result only for wallets the screen *rejects*; anything that passes
+    is left for the counting stages to decide, so nothing here can accidentally
+    admit a wallet that has not met the transaction threshold.
+    """
+    if not (screen.needs_balance or screen.needs_code):
+        return []
+
+    payload: list[dict] = []
+    slots: list[tuple[int, str, str]] = []  # (id, address, which check)
+    for address in addresses:
+        if screen.needs_balance:
+            slots.append((len(payload), address, "balance"))
+            payload.append(
+                {"jsonrpc": "2.0", "id": len(payload), "method": "eth_getBalance", "params": [address, "latest"]}
+            )
+        if screen.needs_code:
+            slots.append((len(payload), address, "code"))
+            payload.append(
+                {"jsonrpc": "2.0", "id": len(payload), "method": "eth_getCode", "params": [address, "latest"]}
+            )
+
+    try:
+        raw = client.call(payload, cost=len(addresses) * screen.cu_per_address)
+    except FatalRpcError:
+        raise
+    except RpcError as exc:
+        return [Result(addr, -1, error=str(exc)) for addr in addresses]
+
+    if isinstance(raw, dict):
+        raw = [raw]
+    by_id = {item.get("id"): item for item in raw if isinstance(item, dict)}
+
+    rejected: dict[str, Result] = {}
+    for request_id, address, which in slots:
+        if address in rejected:
+            continue  # already excluded by the other check in this batch
+        item = by_id.get(request_id)
+        if item is None or (item.get("error") if isinstance(item, dict) else None):
+            detail = "missing from batch response" if item is None else str(item["error"])[:200]
+            rejected[address] = Result(address, -1, error=detail)
+            continue
+
+        value = item.get("result")
+        if which == "balance":
+            try:
+                balance = int(value, 16)
+            except (TypeError, ValueError):
+                rejected[address] = Result(address, -1, error=f"bad balance: {value!r}")
+                continue
+            if balance < screen.min_balance_wei:
+                rejected[address] = Result(address, -1, rejected_by="min_balance")
+        else:
+            if not isinstance(value, str):
+                rejected[address] = Result(address, -1, error=f"bad code: {value!r}")
+                continue
+            # Anything other than empty bytecode means this is a contract, not an EOA.
+            if value not in ("0x", "0x0", ""):
+                rejected[address] = Result(address, -1, rejected_by="contract")
+
+    return list(rejected.values())
+
+
+# --------------------------------------------------------------------------
 # counting strategies
 # --------------------------------------------------------------------------
 
@@ -487,6 +675,8 @@ def load_checkpoint(path: Path) -> dict[str, Result]:
                     int(record["count"]),
                     bool(record.get("capped", False)),
                     partial=bool(record.get("partial", False)),
+                    rejected_by=record.get("rejected_by"),
+                    kept_by=record.get("kept_by"),
                 )
             except (ValueError, KeyError, TypeError):
                 continue  # truncated final line from an interrupted run
@@ -505,6 +695,9 @@ def run_signature(cfg: Config) -> dict:
         "min_tx": cfg.threshold,
         "categories": list(cfg.categories),
         "exact_counts": cfg.exact,
+        # A checkpoint also carries screening verdicts, so a changed screen makes
+        # those stale in exactly the same way a changed threshold does.
+        "screen": cfg.screen.describe(),
     }
 
 
@@ -541,6 +734,8 @@ class CheckpointWriter:
                             "capped": result.capped,
                             "error": result.error,
                             "partial": result.partial,
+                            "rejected_by": result.rejected_by,
+                            "kept_by": result.kept_by,
                         }
                     )
                     + "\n"
@@ -565,6 +760,7 @@ class Config:
     batch_size: int = 100
     workers: int = 5
     exact: bool = False
+    screen: Screen = field(default_factory=Screen)
 
 
 ProgressFn = Callable[[str, int, int], None]
@@ -638,8 +834,39 @@ def run(
     results: list[Result] = []
     pending_inbound: list[Result] = list(resume_partials)
 
+    # Screening runs first and cheapest-first, so a wallet excluded by a list or
+    # a 26 CU state read never reaches the counting stages at all.
+    if cfg.screen.active:
+        settled, addresses = screen_local(addresses, cfg.screen)
+        if settled:
+            results.extend(settled)
+            if checkpoint:
+                checkpoint.write(settled)
+            if on_progress:
+                on_progress("screen", len(settled), len(settled))
+
+        if addresses and (cfg.screen.needs_balance or cfg.screen.needs_code):
+            screened = _execute(
+                list(chunked(addresses, cfg.batch_size)),
+                lambda unit: screen_onchain(client, unit, cfg.screen),
+                cfg.workers,
+                checkpoint,
+                on_progress,
+                "screen",
+                should_stop,
+            )
+            results.extend(screened)
+            excluded = {r.address for r in screened}
+            addresses = [addr for addr in addresses if addr not in excluded]
+
+        # Wallets kept outright by the allowlist must not also be counted.
+        skip = {r.address for r in results}
+        pending_inbound = [r for r in pending_inbound if r.address not in skip]
+
     if cfg.mode == "transfers":
-        return _execute(
+        # `results` already holds anything the screen settled, so it is carried
+        # through rather than returned away.
+        return results + _execute(
             [[addr] for addr in addresses],
             lambda unit: [count_transfers(client, unit[0], cfg.threshold, cfg.categories, cfg.exact)],
             cfg.workers,
@@ -722,8 +949,8 @@ def write_outputs(out_dir: Path, results: Sequence[Result], threshold: int) -> d
     out_dir.mkdir(parents=True, exist_ok=True)
     ordered = sorted(results, key=lambda r: (r.error is not None, -r.count, r.address))
 
-    passed = [r for r in ordered if r.error is None and r.count >= threshold]
-    filtered = [r for r in ordered if r.error is None and r.count < threshold]
+    passed = [r for r in ordered if r.error is None and r.verdict(threshold)]
+    filtered = [r for r in ordered if r.error is None and not r.verdict(threshold)]
     errored = [r for r in ordered if r.error is not None]
 
     def write_csv(name: str, header: list[str], rows: Iterable[list]) -> None:
@@ -737,26 +964,49 @@ def write_outputs(out_dir: Path, results: Sequence[Result], threshold: int) -> d
             raise OutputLocked(path) from exc
 
     def count_cell(r: Result) -> str | int:
+        # Screened-out wallets were never counted, so a number would be a lie.
+        if not r.counted:
+            return ""
         return f">={r.count}" if r.capped else r.count
 
-    write_csv("passed.csv", ["address", "tx_count"], ([r.address, count_cell(r)] for r in passed))
-    write_csv("filtered.csv", ["address", "tx_count"], ([r.address, r.count] for r in filtered))
+    write_csv(
+        "passed.csv",
+        ["address", "tx_count", "reason"],
+        ([r.address, count_cell(r), r.reason(threshold)] for r in passed),
+    )
+    write_csv(
+        "filtered.csv",
+        ["address", "tx_count", "reason"],
+        ([r.address, count_cell(r), r.reason(threshold)] for r in filtered),
+    )
     write_csv(
         "results.csv",
-        ["address", "tx_count", "passed"],
-        ([r.address, count_cell(r), r.count >= threshold] for r in ordered if r.error is None),
+        ["address", "tx_count", "passed", "reason"],
+        (
+            [r.address, count_cell(r), r.verdict(threshold), r.reason(threshold)]
+            for r in ordered
+            if r.error is None
+        ),
     )
     if errored:
         write_csv("errors.csv", ["address", "error"], ([r.address, r.error] for r in errored))
 
     # Machine-readable outcome, for callers that are not a terminal -- CI job
     # summaries, the web app, anything wanting the split without parsing stdout.
+    breakdown: dict[str, int] = {}
+    for r in filtered:
+        key = r.reason(threshold)
+        breakdown[key] = breakdown.get(key, 0) + 1
+
     summary = {
         "passed": len(passed),
         "filtered": len(filtered),
         "errors": len(errored),
         "min_tx": threshold,
         "total": len(passed) + len(filtered),
+        # Which criterion removed each wallet, so a run can be explained without
+        # re-reading the CSVs.
+        "filtered_by": breakdown,
     }
     try:
         (out_dir / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
@@ -766,7 +1016,9 @@ def write_outputs(out_dir: Path, results: Sequence[Result], threshold: int) -> d
     return {"passed": len(passed), "filtered": len(filtered), "errors": len(errored)}
 
 
-def estimate(count: int, mode: str, cu_per_second: int) -> tuple[int, int, float, float]:
+def estimate(
+    count: int, mode: str, cu_per_second: int, screen: Screen | None = None
+) -> tuple[int, int, float, float]:
     """Best- and worst-case compute units, and the matching times in seconds.
 
     The range is real rather than decorative: in "both" mode the cost depends on
@@ -781,6 +1033,13 @@ def estimate(count: int, mode: str, cu_per_second: int) -> tuple[int, int, float
     else:
         cu_low = count * CU_TRANSFERS  # outbound alone answers it
         cu_high = count * CU_TRANSFERS * 2  # both directions for every wallet
+
+    if screen is not None and screen.cu_per_address:
+        # The screen is paid up front for everyone, but each wallet it rejects
+        # saves the whole counting cost -- so it raises the floor and lowers the
+        # ceiling at the same time.
+        cu_low += count * screen.cu_per_address
+        cu_high += count * screen.cu_per_address
 
     if not cu_per_second:
         return cu_low, cu_high, 0.0, 0.0
@@ -829,10 +1088,70 @@ def build_parser() -> argparse.ArgumentParser:
         default=330,
         help="your plan's compute units per second -- requests are paced to it (default: 330, the free tier; 0 = no pacing)",
     )
+    screen_group = parser.add_argument_group(
+        "screening",
+        "Extra criteria applied besides the transaction count. Cheapest first: the "
+        "lists cost nothing, balance and code are one batched state read each, and "
+        "anything rejected never pays for a transfer lookup.",
+    )
+    screen_group.add_argument(
+        "--denylist",
+        type=Path,
+        help="file of addresses to always reject (one per line, # comments allowed)",
+    )
+    screen_group.add_argument(
+        "--allowlist",
+        type=Path,
+        help="file of addresses to always keep, without counting them",
+    )
+    screen_group.add_argument(
+        "--min-balance",
+        default="0",
+        help="reject wallets holding less than this much ETH (e.g. 0.01); default 0 = no check",
+    )
+    screen_group.add_argument(
+        "--exclude-contracts",
+        action="store_true",
+        help="reject addresses that have contract code (keep externally-owned accounts only)",
+    )
     parser.add_argument("--no-resume", action="store_true", help="ignore any existing checkpoint and start over")
     parser.add_argument("--no-retry", action="store_true", help="skip the automatic retry pass over failed wallets")
     parser.add_argument("--dry-run", action="store_true", help="parse the input and print an estimate, no network")
     return parser
+
+
+def parse_eth_amount(raw: str) -> int:
+    """Turn an ETH amount like "0.01" into wei, exactly.
+
+    Decimal string handling rather than float maths, so 0.1 means 0.1 and not
+    0.09999999999999999.
+    """
+    text = str(raw).strip()
+    if not text:
+        return 0
+    if not re.fullmatch(r"\d*(\.\d*)?", text) or text in (".", ""):
+        raise ValueError(f"--min-balance must be a plain ETH amount, got {raw!r}")
+    whole, _, frac = text.partition(".")
+    frac = (frac + "0" * 18)[:18]
+    return int(whole or "0") * 10**18 + int(frac or "0")
+
+
+def build_screen(args: argparse.Namespace) -> Screen:
+    """Assemble the screening criteria from parsed CLI arguments."""
+
+    def read_list(path: Path | None, label: str) -> frozenset[str]:
+        if path is None:
+            return frozenset()
+        if not path.exists():
+            raise OSError(f"{label} file not found: {path}")
+        return load_address_list(path)
+
+    return Screen(
+        denylist=read_list(getattr(args, "denylist", None), "--denylist"),
+        allowlist=read_list(getattr(args, "allowlist", None), "--allowlist"),
+        min_balance_wei=parse_eth_amount(getattr(args, "min_balance", "0") or "0"),
+        exclude_contracts=bool(getattr(args, "exclude_contracts", False)),
+    )
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -843,6 +1162,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
     if not args.input.exists():
         print(f"input file not found: {args.input}", file=sys.stderr)
+        return 2
+
+    try:
+        screen = build_screen(args)
+    except (OSError, ValueError) as exc:
+        print(str(exc), file=sys.stderr)
         return 2
 
     addresses, malformed = load_addresses(args.input, args.column)
@@ -856,13 +1181,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     if malformed:
         print(f"  skipped {len(malformed)} malformed rows (e.g. {malformed[0]!r})")
 
-    cu_low, cu_high, sec_low, sec_high = estimate(len(addresses), args.mode, args.cu_per_second)
+    cu_low, cu_high, sec_low, sec_high = estimate(len(addresses), args.mode, args.cu_per_second, screen)
     if cu_low == cu_high:
         cost = f"~{cu_low:,} CU, ~{sec_low / 60:.1f} min"
     else:
         cost = f"{cu_low:,}-{cu_high:,} CU, {sec_low / 60:.0f}-{sec_high / 60:.0f} min"
     batching = args.batch_size if args.batch_size else safe_batch_size(args.cu_per_second)
     print(f"mode={args.mode} min-tx={args.min_tx}  {cost} at {args.cu_per_second} CU/s, batches of {batching}")
+    if screen.active:
+        print(f"screening: {screen.describe()}")
 
     if args.dry_run:
         return 0
@@ -894,6 +1221,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         batch_size=batch_size,
         workers=args.workers,
         exact=args.exact_counts,
+        screen=screen,
     )
 
     stale = describe_signature_mismatch(meta_path, cfg)

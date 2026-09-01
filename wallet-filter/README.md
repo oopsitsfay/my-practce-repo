@@ -29,9 +29,9 @@ Output lands in `./out`:
 
 | file | contents |
 | --- | --- |
-| `passed.csv` | wallets with **>= 4** transactions — your filtered whitelist |
-| `filtered.csv` | wallets with **< 4** transactions — the ones removed |
-| `results.csv` | every wallet with its count and a `passed` flag |
+| `passed.csv` | wallets that met every criterion — your filtered whitelist |
+| `filtered.csv` | the ones removed, each with the `reason` it failed |
+| `results.csv` | every wallet with its count, a `passed` flag and a `reason` |
 | `errors.csv` | only written if some wallets could not be resolved |
 | `checkpoint.jsonl`, `meta.json` | resume state (safe to delete once you have the results) |
 
@@ -88,6 +88,58 @@ Since counting stops at the threshold, a wallet that passes shows `>=4` rather
 than a precise number — the exact total was never worth paying for. Pass
 `--exact-counts` for true totals at considerably higher cost.
 
+## Screening on more than transaction count
+
+Transaction count is the default filter, but it is not the only one. Four extra
+criteria can be layered on, and they are applied **cheapest first** — the same
+principle as the two counting stages, for the same reason: a wallet rejected by
+a free list check never costs a 150 CU transfer lookup.
+
+| Criterion | Flag | Cost per wallet |
+| --- | --- | --- |
+| Never keep these addresses | `--denylist FILE` | free, no network |
+| Always keep these addresses | `--allowlist FILE` | free, no network |
+| Must hold at least *N* ETH | `--min-balance 0.01` | 26 CU, batched |
+| Must not be a contract | `--exclude-contracts` | 26 CU, batched |
+
+```bash
+python3 filter_wallets.py wallets.csv --min-tx 4 \
+  --denylist known-bad.txt \
+  --min-balance 0.01 \
+  --exclude-contracts
+```
+
+List files are one address per line; blank lines and `#` comments are ignored,
+matching is case-insensitive, and malformed rows are skipped rather than fatal.
+
+A few behaviours worth knowing:
+
+- **`--allowlist` keeps a wallet outright**, without counting it. That is the
+  point — it is the escape hatch for addresses you know should survive whatever
+  the threshold says. Their `tx_count` cell is left blank, because no count was
+  ever taken and printing a number would be a lie.
+- **The denylist wins** if an address is on both lists. That combination is a
+  contradiction, and refusing is the safer way to resolve it.
+- **`--exclude-contracts` keeps only externally-owned accounts.** Useful when a
+  whitelist is meant to be people: it drops multisigs, contract wallets, and any
+  other address with bytecode.
+- **`--min-balance` is inclusive** — exactly the threshold passes.
+- Screening changes the checkpoint signature, so altering any of these makes an
+  existing checkpoint stale rather than silently mixing verdicts, exactly as
+  changing `--min-tx` does.
+
+Every output row now carries a `reason` column saying which criterion decided
+it (`denylist`, `min_balance`, `contract`, `allowlist`, or `min_tx`), and
+`summary.json` gains a `filtered_by` breakdown:
+
+```json
+{
+  "passed": 5820,
+  "filtered": 2051,
+  "filtered_by": { "min_tx": 1789, "min_balance": 203, "denylist": 59 }
+}
+```
+
 ## Options
 
 ```
@@ -101,6 +153,10 @@ than a precise number — the exact total was never worth paying for. Pass
 --categories LIST   transfer categories counted inbound (default: external)
 --exact-counts      count everything, do not stop at the threshold
 --cu-per-second N   your plan's CU/s -- requests are paced to it (default: 330)
+--denylist FILE     addresses to always reject (one per line, # comments ok)
+--allowlist FILE    addresses to always keep, without counting them
+--min-balance ETH   reject wallets holding less than this (e.g. 0.01; 0 = off)
+--exclude-contracts reject addresses that have contract code (keep EOAs only)
 --no-resume         ignore an existing checkpoint and start over
 --no-retry          skip the automatic retry pass over failed wallets
 --dry-run           parse the input and print an estimate without any network calls
